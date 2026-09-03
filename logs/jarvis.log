@@ -16443,3 +16443,5 @@ Exception: API Outage
 2026-08-23 16:18:51 - [INFO] - Jarvis.WakeWord - [MainThread] - Stopping Mock Wake Word Detector.
 2026-08-23 16:18:51 - [INFO] - Jarvis.WakeWord - [WakeWordThread] - Wake Word background thread exiting.
 2026-08-23 16:18:51 - [INFO] - Jarvis.WakeWord - [MainThread] - Mock Wake Word Detector stopped.
+2026-09-03 05:53:14 - [INFO] - root - [MainThread] - Centralized logging system initialized.
+2026-09-03 05:53:14 - [INFO] - root - [MainThread] - Logging Level: DEBUG | Destination: /home/runner/work/Jarvis_/Jarvis_/logs/jarvis.log
