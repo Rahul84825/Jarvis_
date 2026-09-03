@@ -1,0 +1,14 @@
+psutil
+numpy
+sounddevice
+av
+faster-whisper
+edge-tts
+gTTS
+pyttsx3
+PyQt6
+google-generativeai
+pygetwindow
+soundfile
+pycaw; platform_system == "Windows"
+comtypes; platform_system == "Windows"
