@@ -16445,3 +16445,29 @@ Exception: API Outage
 2026-08-23 16:18:51 - [INFO] - Jarvis.WakeWord - [MainThread] - Mock Wake Word Detector stopped.
 2026-09-03 05:53:14 - [INFO] - root - [MainThread] - Centralized logging system initialized.
 2026-09-03 05:53:14 - [INFO] - root - [MainThread] - Logging Level: DEBUG | Destination: /home/runner/work/Jarvis_/Jarvis_/logs/jarvis.log
+2026-09-03 06:03:40 - [INFO] - root - [MainThread] - Centralized logging system initialized.
+2026-09-03 06:03:40 - [INFO] - root - [MainThread] - Logging Level: DEBUG | Destination: /home/runner/work/Jarvis_/Jarvis_/logs/jarvis.log
+2026-09-03 06:03:40 - [INFO] - Jarvis.LocalResponseEngine - [MainThread] - Successfully loaded local response templates from config/responses.json.
+2026-09-03 06:03:40 - [INFO] - Jarvis.LocalResponseEngine - [MainThread] - Successfully loaded local response templates from config/responses.json.
+2026-09-03 06:03:40 - [INFO] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] Routing request to AI Provider: Local Engine (Offline)
+2026-09-03 06:03:40 - [INFO] - Jarvis.LocalResponseEngine - [MainThread] - Successfully loaded local response templates from config/responses.json.
+2026-09-03 06:03:40 - [DEBUG] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] Selected provider 'nvidia' is unconfigured or unavailable.
+2026-09-03 06:03:40 - [DEBUG] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] Selected provider 'nvidia' is unconfigured or unavailable.
+2026-09-03 06:03:40 - [INFO] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] No active AI provider available. Returning None for fallback.
+2026-09-03 06:03:40 - [INFO] - Jarvis.LocalResponseEngine - [MainThread] - Successfully loaded local response templates from config/responses.json.
+2026-09-03 06:03:40 - [DEBUG] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] Selected provider 'openrouter' is unconfigured or unavailable.
+2026-09-03 06:03:40 - [DEBUG] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] Selected provider 'openrouter' is unconfigured or unavailable.
+2026-09-03 06:03:40 - [INFO] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] No active AI provider available. Returning None for fallback.
+2026-09-03 06:03:47 - [INFO] - root - [MainThread] - Centralized logging system initialized.
+2026-09-03 06:03:47 - [INFO] - root - [MainThread] - Logging Level: DEBUG | Destination: /home/runner/work/Jarvis_/Jarvis_/logs/jarvis.log
+2026-09-03 06:03:47 - [INFO] - Jarvis.LocalResponseEngine - [MainThread] - Successfully loaded local response templates from config/responses.json.
+2026-09-03 06:03:47 - [INFO] - Jarvis.LocalResponseEngine - [MainThread] - Successfully loaded local response templates from config/responses.json.
+2026-09-03 06:03:47 - [INFO] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] Routing request to AI Provider: Local Engine (Offline)
+2026-09-03 06:03:47 - [INFO] - Jarvis.LocalResponseEngine - [MainThread] - Successfully loaded local response templates from config/responses.json.
+2026-09-03 06:03:47 - [DEBUG] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] Selected provider 'nvidia' is unconfigured or unavailable.
+2026-09-03 06:03:47 - [DEBUG] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] Selected provider 'nvidia' is unconfigured or unavailable.
+2026-09-03 06:03:47 - [INFO] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] No active AI provider available. Returning None for fallback.
+2026-09-03 06:03:47 - [INFO] - Jarvis.LocalResponseEngine - [MainThread] - Successfully loaded local response templates from config/responses.json.
+2026-09-03 06:03:47 - [DEBUG] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] Selected provider 'openrouter' is unconfigured or unavailable.
+2026-09-03 06:03:47 - [DEBUG] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] Selected provider 'openrouter' is unconfigured or unavailable.
+2026-09-03 06:03:47 - [INFO] - Jarvis.ProviderManager - [MainThread] - [ProviderManager] No active AI provider available. Returning None for fallback.
