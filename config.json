@@ -34,6 +34,7 @@
     "model_tts_voice": "en-US-GuyNeural",
     "log_level": "DEBUG",
     "gemini_api_key": "",
+    "nvidia_api_key": "",
     "gemini_temperature": 0.7,
     "gemini_max_tokens": 150,
     "whisper_model_size": "small",

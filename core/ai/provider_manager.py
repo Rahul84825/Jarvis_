@@ -7,6 +7,7 @@ from core.ai.providers.openrouter_provider import OpenRouterProvider
 from core.ai.providers.cerebras_provider import CerebrasProvider
 from core.ai.providers.gemini_provider import GeminiProvider
 from core.ai.providers.openai_provider import OpenAIProvider
+from core.ai.providers.nvidia_provider import NVIDIAProvider
 
 logger = logging.getLogger("Jarvis.ProviderManager")
 
@@ -22,7 +23,8 @@ class ProviderManager:
             "openrouter": OpenRouterProvider(),
             "cerebras": CerebrasProvider(),
             "gemini": GeminiProvider(),
-            "openai": OpenAIProvider()
+            "openai": OpenAIProvider(),
+            "nvidia": NVIDIAProvider()
         }
 
     @property

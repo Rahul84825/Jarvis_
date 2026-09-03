@@ -57,6 +57,11 @@ class TestJarvisRuntime(unittest.TestCase):
         self.runtime.register_observers(on_speech_debug=mock_debug_cb)
         self.assertEqual(self.runtime.on_speech_debug_cb, mock_debug_cb)
 
+    def test_wakeword_suppressed_when_pipeline_busy(self):
+        self.runtime._pipeline_busy = True
+        self.runtime._on_wakeword("jarvis")
+        self.runtime.listener.trigger_manual_recording.assert_not_called()
+
     @patch("core.jarvis_runtime.CommandExecutor.execute")
     def test_resolve_permission_confirmed(self, mock_exec):
         mock_exec.return_value = {
@@ -74,6 +79,15 @@ class TestJarvisRuntime(unittest.TestCase):
         self.runtime.pending_intent = {"intent": "system_action", "action": "shutdown_pc"}
         self.runtime.resolve_permission(confirmed=False)
         self.assertIsNone(self.runtime.pending_intent)
+        self.assertEqual(self.runtime.current_status, "STANDBY")
+
+    @patch("core.jarvis_runtime.os.path.exists", return_value=False)
+    def test_speech_end_gates_then_restores_capture_for_empty_text(self, _mock_exists):
+        self.runtime.transcriber.transcribe.return_value = ""
+        self.runtime._on_speech_end("/tmp/fake.wav")
+        self.runtime.listener.set_capture_enabled.assert_any_call(False)
+        self.runtime.listener.set_capture_enabled.assert_any_call(True)
+        self.assertFalse(self.runtime._pipeline_busy)
         self.assertEqual(self.runtime.current_status, "STANDBY")
 
 if __name__ == "__main__":

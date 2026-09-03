@@ -35,6 +35,7 @@ class JarvisRuntime:
         self.muted = False
         self.pending_intent = None
         self._tts_speaking_lock = False
+        self._pipeline_busy = False
 
         # Observers / Callbacks
         self.on_status_change_cb: Optional[Callable[[str], None]] = None
@@ -142,6 +143,9 @@ class JarvisRuntime:
     # DETECTOR EVENT CALLBACKS
     # ==========================================
     def _on_wakeword(self, word: str):
+        if self._pipeline_busy:
+            logger.info("Suppressing wake word trigger while pipeline is active.")
+            return
         if self._tts_speaking_lock or self.tts_manager.is_speaking():
             logger.info("Suppressing wake word trigger during TTS speech playback.")
             return
@@ -158,15 +162,21 @@ class JarvisRuntime:
         self.listener.trigger_manual_recording(manual=True)
 
     def _on_speech_start(self):
+        if self._pipeline_busy and not self.listener.is_capture_enabled():
+            logger.info("Suppressing speech onset while pipeline is active.")
+            return
         if self._tts_speaking_lock or self.tts_manager.is_speaking():
             logger.info("Suppressing VAD speech onset during TTS playback.")
             return
 
+        self._pipeline_busy = True
         logger.info("[RECORDING_STARTED] Voice onset detected by VAD.")
         self._update_status("LISTENING")
         self._update_speech_text("Listening...")
 
     def _on_speech_end(self, wav_path: str):
+        self._pipeline_busy = True
+        self.listener.set_capture_enabled(False)
         logger.info(f"[RECORDING_FINISHED] Speech audio saved to temporary file: {wav_path}")
         self._update_status("TRANSCRIBING")
 
@@ -196,6 +206,8 @@ class JarvisRuntime:
             logger.info("[RETURNED_TO_STANDBY] Silence detected.")
             self._update_status("STANDBY")
             self._update_speech_text("Standby. Say 'Jarvis' or speak into microphone.")
+            self.listener.set_capture_enabled(True)
+            self._pipeline_busy = False
             return
 
         self._update_speech_text(f"You: {text}")
@@ -368,7 +380,9 @@ class JarvisRuntime:
     # DUPLEX AUDIO & SPEAKER STATUS
     # ==========================================
     def _on_speaker_started(self):
+        self._pipeline_busy = True
         self._tts_speaking_lock = True
+        self.listener.set_capture_enabled(False)
         self.listener.set_speaking_active(True)
         self._update_status("SPEAKING")
 
@@ -376,6 +390,8 @@ class JarvisRuntime:
         if not self.tts_manager.is_speaking():
             self._tts_speaking_lock = False
             self.listener.set_speaking_active(False)
+            self.listener.set_capture_enabled(True)
+            self._pipeline_busy = False
             self._update_status("STANDBY")
             self._update_speech_text("Standby. Say 'Jarvis' or speak into microphone.")
             logger.info("[RETURNED_TO_STANDBY] Speech complete. Voice Core on Standby.")

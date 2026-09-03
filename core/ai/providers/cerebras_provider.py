@@ -28,7 +28,7 @@ class CerebrasProvider(BaseAIProvider):
 
         url = "https://api.cerebras.ai/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {self.api_key.strip()}",
+            "Authorization": "Bearer " + self.api_key,
             "Content-Type": "application/json"
         }
         payload = {

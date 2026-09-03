@@ -29,5 +29,12 @@ class TestProviderManager(unittest.TestCase):
             res = self.pm.generate_response([{"role": "user", "content": "who are you"}])
             self.assertIsNotNone(res)
 
+    def test_nvidia_provider_unavailable_without_key(self):
+        with patch.object(config, "ai_provider", "nvidia"):
+            with patch.object(config, "nvidia_api_key", ""):
+                self.assertIsNone(self.pm.get_active_provider())
+                res = self.pm.generate_response([{"role": "user", "content": "hello"}])
+                self.assertIsNone(res)
+
 if __name__ == "__main__":
     unittest.main()

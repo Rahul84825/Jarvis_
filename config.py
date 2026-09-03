@@ -70,12 +70,13 @@ class Config:
         self.log_file = str(LOGS_DIR / "jarvis.log")
         self.log_level = "DEBUG"
 
-        # AI Provider Settings (Options: "none", "local", "openrouter", "cerebras", "gemini", "openai")
+        # AI Provider Settings (Options: "none", "local", "openrouter", "cerebras", "gemini", "openai", "nvidia")
         self.ai_provider = "none"
         self.openrouter_api_key = ""
         self.cerebras_api_key = ""
         self.openai_api_key = ""
         self.gemini_api_key = ""
+        self.nvidia_api_key = ""
         self.gemini_temperature = 0.7
         self.gemini_max_tokens = 150
         
@@ -145,6 +146,8 @@ class Config:
             self.openai_api_key = os.environ["OPENAI_API_KEY"]
         if "GEMINI_API_KEY" in os.environ and os.environ["GEMINI_API_KEY"]:
             self.gemini_api_key = os.environ["GEMINI_API_KEY"]
+        if "NVIDIA_API_KEY" in os.environ and os.environ["NVIDIA_API_KEY"]:
+            self.nvidia_api_key = os.environ["NVIDIA_API_KEY"]
         if "PORCUPINE_API_KEY" in os.environ and os.environ["PORCUPINE_API_KEY"]:
             self.porcupine_api_key = os.environ["PORCUPINE_API_KEY"]
         if "JARVIS_WAKEWORD_ENGINE" in os.environ and os.environ["JARVIS_WAKEWORD_ENGINE"]:

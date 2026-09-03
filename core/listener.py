@@ -42,6 +42,7 @@ class SpeechListener:
         
         # Stabilization lock
         self.speaking_active = False
+        self._capture_enabled = True
 
     def set_speaking_active(self, is_speaking: bool):
         """Mutes speech listener background VAD while Jarvis is speaking."""
@@ -55,6 +56,20 @@ class SpeechListener:
                     self._audio_buffer = []
                     self._silence_start = None
                     self._recording_start_time = None
+
+    def set_capture_enabled(self, enabled: bool):
+        """Enables/disables automatic microphone capture and VAD onset."""
+        with self._lock:
+            self._capture_enabled = bool(enabled)
+            if not self._capture_enabled and self._recording and not self._manual_recording:
+                self._recording = False
+                self._audio_buffer = []
+                self._silence_start = None
+                self._recording_start_time = None
+
+    def is_capture_enabled(self) -> bool:
+        with self._lock:
+            return self._capture_enabled
 
     def start(self, on_speech_start=None, on_speech_end=None):
         """Starts monitoring the microphone stream for voice activity."""
@@ -75,6 +90,7 @@ class SpeechListener:
             self._audio_buffer = []
             self._pre_roll_buffer = []
             self.speaking_active = False
+            self._capture_enabled = True
             
             try:
                 self._stream = sd.InputStream(
@@ -103,6 +119,7 @@ class SpeechListener:
             self._recording = False
             self._manual_recording = False
             self._recording_start_time = None
+            self._capture_enabled = True
             
             if self._stream:
                 try:
@@ -127,6 +144,7 @@ class SpeechListener:
                 return
             
             logger.info(f"Speech recording triggered (manual={manual}). Resetting buffer.")
+            self._capture_enabled = True
             self._audio_buffer = list(self._pre_roll_buffer)
             self._recording = True
             self._recording_start_time = time.time()
@@ -184,6 +202,9 @@ class SpeechListener:
             speech_threshold = max(self.threshold, self._ambient_rms * 2.0)
 
             # If in standby monitoring mode (VAD)
+            if not self._capture_enabled and not self._recording:
+                return
+
             if self._running and not self._recording:
                 if self.enable_vad_onset and rms > speech_threshold:
                     logger.info(f"VAD: Speech onset detected (RMS: {rms:.4f} > Threshold: {speech_threshold:.4f}, Ambient: {self._ambient_rms:.4f}). Recording started.")

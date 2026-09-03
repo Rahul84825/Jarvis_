@@ -1,7 +1,7 @@
 # AI Provider Abstraction Architecture
 
 ## Overview
-The AI Provider Abstraction Framework decouples the core Jarvis voice runtime from specific cloud LLM services (Gemini, OpenRouter, Cerebras, OpenAI, or local engines). This design enforces strict provider independence: Jarvis starts and operates without any API keys configured, and AI providers plug in dynamically via a standardized interface.
+The AI Provider Abstraction Framework decouples the core Jarvis voice runtime from specific cloud LLM services (Gemini, OpenRouter, Cerebras, OpenAI, NVIDIA NIM, or local engines). This design enforces strict provider independence: Jarvis starts and operates without any API keys configured, and AI providers plug in dynamically via a standardized interface.
 
 ---
 
@@ -16,7 +16,7 @@ Defines the required interface for all AI providers:
 - `health_check() -> bool`: Verifies connectivity.
 
 ### 2. Provider Manager (`core/ai/provider_manager.py`)
-- Reads `config.ai_provider` (Options: `"none"`, `"local"`, `"openrouter"`, `"cerebras"`, `"gemini"`, `"openai"`).
+- Reads `config.ai_provider` (Options: `"none"`, `"local"`, `"openrouter"`, `"cerebras"`, `"gemini"`, `"openai"`, `"nvidia"`).
 - Dynamically selects the active provider and handles graceful fallbacks if key is missing or service is down.
 - Guarantees zero crashes or API error outputs when `AI_PROVIDER=none`.
 
@@ -26,6 +26,7 @@ Defines the required interface for all AI providers:
 - `CerebrasProvider`: Cerebras ultra-fast inference API integration.
 - `GeminiProvider`: Google Gemini API integration.
 - `OpenAIProvider`: OpenAI Chat Completions API integration.
+- `NVIDIAProvider`: NVIDIA NIM Chat Completions API integration.
 
 ---
 

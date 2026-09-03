@@ -3,30 +3,31 @@ from typing import List, Dict, Any, Optional
 from core.ai.base_provider import BaseAIProvider
 from config import config
 
-logger = logging.getLogger("Jarvis.OpenAIProvider")
+logger = logging.getLogger("Jarvis.NVIDIAProvider")
 
-class OpenAIProvider(BaseAIProvider):
-    """OpenAI API Provider."""
 
-    def __init__(self, api_key: str = None, model: str = "gpt-4o-mini"):
-        self.api_key = api_key or getattr(config, "openai_api_key", "")
+class NVIDIAProvider(BaseAIProvider):
+    """NVIDIA NIM chat-completions provider."""
+
+    def __init__(self, api_key: str = None, model: str = "meta/llama-3.1-8b-instruct"):
+        self.api_key = api_key or getattr(config, "nvidia_api_key", "")
         self.model = model
 
     def get_name(self) -> str:
-        return "OpenAI Cloud AI"
+        return "NVIDIA NIM Cloud AI"
 
     def is_available(self) -> bool:
         return bool(self.api_key and len(self.api_key.strip()) > 5)
 
     def generate_response(self, messages: List[Dict[str, str]], context: Optional[Dict[str, Any]] = None) -> Optional[str]:
         if not self.is_available():
-            logger.debug("[OpenAI] Provider unavailable (missing API key).")
+            logger.debug("[NVIDIA] Provider unavailable (missing API key).")
             return None
 
         import urllib.request
         import json
 
-        url = "https://api.openai.com/v1/chat/completions"
+        url = "https://integrate.api.nvidia.com/v1/chat/completions"
         headers = {
             "Authorization": "Bearer " + self.api_key,
             "Content-Type": "application/json"
@@ -46,5 +47,5 @@ class OpenAIProvider(BaseAIProvider):
                 if choices:
                     return choices[0].get("message", {}).get("content", "").strip()
         except Exception as e:
-            logger.error(f"[OpenAI] API request failed: {e}")
+            logger.error(f"[NVIDIA] API request failed: {e}")
         return None
