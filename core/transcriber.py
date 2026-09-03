@@ -72,11 +72,14 @@ class SpeechTranscriber:
         
         try:
             # transcribe returns generator of (segments, info)
+            initial_prompt = "Jarvis, open VS Code, YouTube, Chrome, Spotify, Notepad, Calculator, lock computer, take a screenshot, calculate, system status, shutdown, restart, volume up, volume down, mute, unmute, minimize, maximize, what time is it, what is the date, search google, play music."
             segments, info = self._model.transcribe(
                 str(path),
                 beam_size=5,
                 language="en",
-                vad_filter=True  # Filter out silence/non-speech frames
+                initial_prompt=initial_prompt,
+                condition_on_previous_text=False,
+                vad_filter=False  # SpeechListener already handles VAD segmenting; vad_filter=False prevents Silero from discarding speech
             )
             
             # Consume generator to collect all segments
@@ -92,9 +95,32 @@ class SpeechTranscriber:
             replacements = {
                 r"\bversus\s*code\b": "VS Code",
                 r"\bverse\s+is\s+good\b": "VS Code",
+                r"\bvee\s*es\s*code\b": "VS Code",
+                r"\bviscode\b": "VS Code",
+                r"\bvi\s*es\s*code\b": "VS Code",
                 r"\blog\s*computer\b": "lock computer",
+                r"\blogcomputer\b": "lock computer",
                 r"\bscreen\s+shot\b": "screenshot",
-                r"\bdown\s+loads\b": "downloads"
+                r"\bdown\s+loads\b": "downloads",
+                r"\byou\s+tube\b": "YouTube",
+                r"\bu\s+tube\b": "YouTube",
+                r"\bnot\s+pad\b": "notepad",
+                r"\bshut\s+down\b": "shutdown",
+                r"\bclothe\b": "close",
+                r"\bclothes\b": "close",
+                r"\bkrone\b": "chrome",
+                r"\bcrome\b": "chrome",
+                r"\bgit\s+hub\b": "GitHub",
+                r"\bget\s+hub\b": "GitHub",
+                r"\bjarves\b": "Jarvis",
+                r"\bjervis\b": "Jarvis",
+                r"\bcalcilator\b": "calculator",
+                r"\bkalculator\b": "calculator",
+                r"\banti\s+gravity\b": "Antigravity",
+                r"\bwell\s+meds\b": "WellMeds",
+                r"\btest\s+speach\b": "test speech",
+                r"\bspeech\s+test\b": "test speech",
+                r"\bmic\s+test\b": "test microphone",
             }
             for pattern, repl in replacements.items():
                 transcription = re.sub(pattern, repl, transcription, flags=re.IGNORECASE)

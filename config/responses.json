@@ -1,0 +1,93 @@
+{
+  "greeting": [
+    "Hello.",
+    "Hello! How can I help?",
+    "Yes, I'm here.",
+    "Hi. What can I do for you?"
+  ],
+  "namaste": [
+    "Namaste.",
+    "Namaste! How can I help?"
+  ],
+  "wake_response": [
+    "Yes?",
+    "I'm listening.",
+    "Go ahead."
+  ],
+  "thank_you": [
+    "You're welcome.",
+    "Anytime.",
+    "Happy to help."
+  ],
+  "goodbye": [
+    "Goodbye.",
+    "See you later."
+  ],
+  "help": [
+    "I can open applications, manage your computer, control volume, open folders and websites, take screenshots, and execute multiple commands."
+  ],
+  "identity": [
+    "I'm {assistant_name}, your personal desktop assistant.",
+    "I'm {assistant_name}, built as a personal AI assistant project for {owner_name}."
+  ],
+  "open_app": [
+    "Opening {app}.",
+    "Sure, opening {app}."
+  ],
+  "close_app": [
+    "Closing {app}."
+  ],
+  "screenshot": [
+    "Taking a screenshot.",
+    "Screenshot saved."
+  ],
+  "volume_up": [
+    "Volume increased."
+  ],
+  "volume_down": [
+    "Volume decreased."
+  ],
+  "mute": [
+    "Muted."
+  ],
+  "unmute": [
+    "Unmuted."
+  ],
+  "lock_pc": [
+    "Locking the computer."
+  ],
+  "open_website": [
+    "Opening {site}.",
+    "Sure, opening {site}."
+  ],
+  "file_access": [
+    "Opening {folder}."
+  ],
+  "window_control": [
+    "Window updated."
+  ],
+  "system_control": [
+    "System setting updated."
+  ],
+  "system_action": [
+    "Executing system action."
+  ],
+  "repeat": [
+    "I said: {last_spoken}"
+  ],
+  "cancellation": [
+    "Action canceled. Standby."
+  ],
+  "error_generic": [
+    "I couldn't complete that."
+  ],
+  "error_not_found": [
+    "I couldn't find that application."
+  ],
+  "error_unsupported": [
+    "That action isn't supported on this system."
+  ],
+  "unknown": [
+    "I'm not sure how to help with that yet, but I can open apps, websites, control volume, or take screenshots."
+  ]
+}

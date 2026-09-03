@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize, QPoint
 from PyQt6.QtGui import QColor, QPainter, QFont, QIcon, QAction, QPen, QBrush
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QTextEdit, QProgressBar, QCheckBox, QSystemTrayIcon, QMenu,
+    QPushButton, QTextEdit, QLineEdit, QProgressBar, QCheckBox, QSystemTrayIcon, QMenu,
     QFrame
 )
 
@@ -123,6 +123,7 @@ class MainWindow(QMainWindow):
     sig_sys_stats_updated = pyqtSignal(float, float)  # cpu, ram
     sig_speech_text_updated = pyqtSignal(str)          # Shows what user is saying / assistant is processing
     sig_closed = pyqtSignal()
+    sig_command_submitted = pyqtSignal(str)           # User typed command input signal
     
     # OS control specific thread-safe signals
     sig_history_updated = pyqtSignal(list)
@@ -130,6 +131,7 @@ class MainWindow(QMainWindow):
     sig_show_permission_dialog = pyqtSignal(str, str)     # action, message
     sig_permission_resolved = pyqtSignal(bool)            # confirmed response signal
     sig_speech_debug_updated = pyqtSignal(str, float, str, float)  # text, confidence, language, duration
+    sig_pipeline_stage_updated = pyqtSignal(str, str, str, str, str, str)  # raw, norm, intent, exec, resp, playback
 
     def __init__(self):
         super().__init__()
@@ -159,6 +161,7 @@ class MainWindow(QMainWindow):
         self.sig_last_action_updated.connect(self._on_last_action_updated)
         self.sig_show_permission_dialog.connect(self._on_show_permission_dialog)
         self.sig_speech_debug_updated.connect(self._on_speech_debug_updated)
+        self.sig_pipeline_stage_updated.connect(self._on_pipeline_stage_updated)
         
         # Setup telemetry timer (1 second interval)
         self._telemetry_timer = QTimer(self)
@@ -277,6 +280,18 @@ class MainWindow(QMainWindow):
                 background-color: #00f0ff;
                 image: url(none); /* System draws check, or we can customize */
             }
+            QLineEdit#cmdInput {
+                background-color: #060608;
+                border: 1px solid rgba(0, 240, 255, 120);
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 12px;
+                color: #00f0ff;
+            }
+            QLineEdit#cmdInput:focus {
+                border: 1px solid #00f0ff;
+                background-color: rgba(0, 240, 255, 20);
+            }
         """)
 
     def _init_ui(self):
@@ -294,7 +309,7 @@ class MainWindow(QMainWindow):
         title = QLabel("J A R V I S")
         title.setObjectName("headerTitle")
         
-        subtitle = QLabel("FOUNDATION SYSTEM v1.0 • ONLINE")
+        subtitle = QLabel("FOUNDATION SYSTEM v1.1 • ONLINE")
         subtitle.setObjectName("headerSubtitle")
         
         header_text_layout.addWidget(title)
@@ -331,7 +346,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_layout.setSpacing(12)
         
-        panel_title = QLabel("AUDIO TELEMETRY")
+        panel_title = QLabel("AUDIO TELEMETRY & CONTROLS")
         panel_title.setStyleSheet("font-weight: bold; color: #00f0ff; font-size: 14px;")
         left_layout.addWidget(panel_title)
         
@@ -353,6 +368,25 @@ class MainWindow(QMainWindow):
         self.mic_btn.clicked.connect(self._toggle_mic)
         left_layout.addWidget(self.mic_btn)
 
+        # Manual Command Text Input Box
+        left_layout.addSpacing(5)
+        input_title = QLabel("MANUAL COMMAND INPUT")
+        input_title.setStyleSheet("font-weight: bold; color: #00f0ff; font-size: 11px; letter-spacing: 1px;")
+        left_layout.addWidget(input_title)
+        
+        input_box_layout = QHBoxLayout()
+        self.cmd_input = QLineEdit()
+        self.cmd_input.setObjectName("cmdInput")
+        self.cmd_input.setPlaceholderText("Type command (e.g. 'open chrome', 'take screenshot')...")
+        self.cmd_input.returnPressed.connect(self._submit_typed_command)
+        
+        self.send_cmd_btn = QPushButton("SEND")
+        self.send_cmd_btn.clicked.connect(self._submit_typed_command)
+        
+        input_box_layout.addWidget(self.cmd_input)
+        input_box_layout.addWidget(self.send_cmd_btn)
+        left_layout.addLayout(input_box_layout)
+
         # Simulation/Manual Testing Tools Group
         left_layout.addSpacing(5)
         sim_title = QLabel("MANUAL TESTING TRIGGERS")
@@ -361,96 +395,79 @@ class MainWindow(QMainWindow):
         
         sim_buttons_layout = QHBoxLayout()
         
-        btn_wakeword = QPushButton("Wake Word")
+        btn_wakeword = QPushButton("Simulate Wake Word ('Jarvis')")
         btn_wakeword.clicked.connect(self._trigger_wakeword)
         
-        btn_clap = QPushButton("Clap")
-        btn_clap.clicked.connect(self._trigger_clap)
-        
         sim_buttons_layout.addWidget(btn_wakeword)
-        sim_buttons_layout.addWidget(btn_clap)
         left_layout.addLayout(sim_buttons_layout)
         
         middle_layout.addWidget(left_panel, stretch=4)
         
-        # Speech Debug Panel
+        # Speech & Command Pipeline Debug Panel
         debug_panel = QFrame()
         debug_panel.setObjectName("panel")
         debug_layout = QVBoxLayout(debug_panel)
-        debug_layout.setSpacing(12)
+        debug_layout.setSpacing(6)
         
-        debug_panel_title = QLabel("SPEECH DECODING DEBUG")
-        debug_panel_title.setStyleSheet("font-weight: bold; color: #00f0ff; font-size: 14px;")
+        debug_panel_title = QLabel("COMMAND UNDERSTANDING DEBUG")
+        debug_panel_title.setStyleSheet("font-weight: bold; color: #00f0ff; font-size: 13px;")
         debug_layout.addWidget(debug_panel_title)
         
-        # Recorded Text Display
-        debug_layout.addWidget(QLabel("RECORDED TEXT:"))
+        # 1. Raw Whisper Text Display
+        debug_layout.addWidget(QLabel("1. RAW WHISPER OUTPUT:"))
         self.debug_text_val = QTextEdit()
         self.debug_text_val.setReadOnly(True)
-        self.debug_text_val.setPlaceholderText("No speech recorded yet.")
-        self.debug_text_val.setStyleSheet("""
-            QTextEdit {
-                background-color: #060608;
-                border: 1px solid rgba(0, 240, 255, 30);
-                border-radius: 8px;
-                font-family: 'Consolas', 'Courier New', monospace;
-                font-size: 12px;
-                color: #e2e2e9;
-            }
-        """)
-        self.debug_text_val.setMinimumHeight(60)
-        self.debug_text_val.setMaximumHeight(90)
+        self.debug_text_val.setPlaceholderText("Waiting for audio input...")
+        self.debug_text_val.setStyleSheet("background-color: #060608; border: 1px solid rgba(0, 240, 255, 30); border-radius: 6px; font-family: monospace; font-size: 11px; color: #e2e2e9;")
+        self.debug_text_val.setMaximumHeight(40)
         debug_layout.addWidget(self.debug_text_val)
-        
-        # Confidence Metrics
+
+        # 2. Normalized Command
+        debug_layout.addWidget(QLabel("2. NORMALIZED COMMAND:"))
+        self.debug_norm_val = QLabel("N/A")
+        self.debug_norm_val.setStyleSheet("font-weight: bold; color: #00ff66; font-size: 11px; background-color: #060608; padding: 4px; border-radius: 4px;")
+        debug_layout.addWidget(self.debug_norm_val)
+
+        # 3. Detected Intent & Action
+        debug_layout.addWidget(QLabel("3. DETECTED INTENT:"))
+        self.debug_intent_val = QLabel("N/A")
+        self.debug_intent_val.setStyleSheet("font-weight: bold; color: #cc00ff; font-size: 11px; background-color: #060608; padding: 4px; border-radius: 4px;")
+        debug_layout.addWidget(self.debug_intent_val)
+
+        # 4. Executor Result
+        debug_layout.addWidget(QLabel("4. EXECUTOR RESULT:"))
+        self.debug_exec_val = QLabel("N/A")
+        self.debug_exec_val.setStyleSheet("font-weight: bold; color: #ffcc00; font-size: 11px; background-color: #060608; padding: 4px; border-radius: 4px;")
+        debug_layout.addWidget(self.debug_exec_val)
+
+        # 5. Response Manager & Playback Status
+        debug_layout.addWidget(QLabel("5. RESPONSE / PLAYBACK:"))
+        self.debug_resp_val = QLabel("N/A")
+        self.debug_resp_val.setStyleSheet("font-weight: bold; color: #00f0ff; font-size: 11px; background-color: #060608; padding: 4px; border-radius: 4px;")
+        debug_layout.addWidget(self.debug_resp_val)
+
+        # Metrics (Confidence, Lang, Duration)
         self.debug_conf_label = QLabel("CONFIDENCE: 0.0%")
-        self.debug_conf_label.setStyleSheet("font-weight: bold; color: #8a8a9a; font-size: 11px;")
+        self.debug_conf_label.setStyleSheet("font-weight: bold; color: #8a8a9a; font-size: 10px;")
         debug_layout.addWidget(self.debug_conf_label)
         
         self.debug_conf_bar = QProgressBar()
         self.debug_conf_bar.setRange(0, 100)
         self.debug_conf_bar.setValue(0)
-        self.debug_conf_bar.setStyleSheet("""
-            QProgressBar {
-                background-color: rgba(30, 30, 40, 150);
-                border: 1px solid rgba(255, 255, 255, 30);
-                border-radius: 4px;
-                text-align: center;
-                font-weight: bold;
-                color: white;
-            }
-            QProgressBar::chunk {
-                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                                                  stop:0 #00f0ff, stop:1 #00ff66);
-                border-radius: 3px;
-            }
-        """)
+        self.debug_conf_bar.setMaximumHeight(12)
+        self.debug_conf_bar.setStyleSheet("QProgressBar { background-color: rgba(30,30,40,150); border-radius: 3px; font-size: 9px; text-align: center; } QProgressBar::chunk { background-color: #00f0ff; }")
         debug_layout.addWidget(self.debug_conf_bar)
-        
-        # Language Metric
-        lang_layout = QHBoxLayout()
-        lang_lbl = QLabel("DETECTED LANGUAGE:")
-        lang_lbl.setStyleSheet("font-weight: bold; color: #8a8a9a; font-size: 11px;")
-        self.debug_lang_val = QLabel("N/A")
-        self.debug_lang_val.setStyleSheet("font-weight: bold; color: #00f0ff; font-size: 12px;")
-        lang_layout.addWidget(lang_lbl)
-        lang_layout.addWidget(self.debug_lang_val)
-        lang_layout.addStretch()
-        debug_layout.addLayout(lang_layout)
-        
-        # Duration Metric
-        len_layout = QHBoxLayout()
-        len_lbl = QLabel("RECORDING LENGTH:")
-        len_lbl.setStyleSheet("font-weight: bold; color: #8a8a9a; font-size: 11px;")
-        self.debug_len_val = QLabel("0.00 seconds")
-        self.debug_len_val.setStyleSheet("font-weight: bold; color: #00f0ff; font-size: 12px;")
-        len_layout.addWidget(len_lbl)
-        len_layout.addWidget(self.debug_len_val)
-        len_layout.addStretch()
-        debug_layout.addLayout(len_layout)
-        
+
+        lang_len_layout = QHBoxLayout()
+        self.debug_lang_val = QLabel("LANG: N/A")
+        self.debug_lang_val.setStyleSheet("font-weight: bold; color: #8a8a9a; font-size: 10px;")
+        self.debug_len_val = QLabel("LEN: 0.0s")
+        self.debug_len_val.setStyleSheet("font-weight: bold; color: #8a8a9a; font-size: 10px;")
+        lang_len_layout.addWidget(self.debug_lang_val)
+        lang_len_layout.addWidget(self.debug_len_val)
+        debug_layout.addLayout(lang_len_layout)
+
         debug_layout.addStretch()
-        
         middle_layout.addWidget(debug_panel, stretch=4)
 
         # Right Panel (System Stats & Startup Configuration)
@@ -482,6 +499,13 @@ class MainWindow(QMainWindow):
         mem_layout.addWidget(self.ram_label)
         mem_layout.addWidget(self.ram_bar)
         right_layout.addLayout(mem_layout)
+
+        # AI Provider Metric Label
+        from config import config
+        prov_key = getattr(config, "ai_provider", "none").upper()
+        self.ai_prov_label = QLabel(f"AI PROVIDER: {prov_key} (OPTIONAL)")
+        self.ai_prov_label.setStyleSheet("font-weight: bold; color: #00ff66; font-size: 11px;")
+        right_layout.addWidget(self.ai_prov_label)
 
         right_layout.addSpacing(10)
 
@@ -632,8 +656,20 @@ class MainWindow(QMainWindow):
         conf_percent = int(confidence * 100)
         self.debug_conf_bar.setValue(conf_percent)
         self.debug_conf_label.setText(f"CONFIDENCE: {confidence*100:.1f}%")
-        self.debug_lang_val.setText(language.upper())
-        self.debug_len_val.setText(f"{duration:.2f} seconds")
+        self.debug_lang_val.setText(f"LANG: {language.upper()}")
+        self.debug_len_val.setText(f"LEN: {duration:.2f}s")
+
+    def _on_pipeline_stage_updated(self, raw: str, norm: str, intent: str, exec_res: str, resp: str, playback: str):
+        if raw:
+            self.debug_text_val.setText(raw)
+        if norm:
+            self.debug_norm_val.setText(norm)
+        if intent:
+            self.debug_intent_val.setText(intent)
+        if exec_res:
+            self.debug_exec_val.setText(exec_res)
+        if resp:
+            self.debug_resp_val.setText(f"{resp} [{playback}]")
 
     def _on_log_received(self, log_entry: str):
         self.console.append(log_entry)
@@ -678,10 +714,13 @@ class MainWindow(QMainWindow):
         if self.trigger_wakeword_cb:
             self.trigger_wakeword_cb()
 
-    def _trigger_clap(self):
-        """Simulates a double-clap detection event."""
-        if self.trigger_clap_cb:
-            self.trigger_clap_cb()
+    def _submit_typed_command(self):
+        """Dispatches text typed into the manual command input box."""
+        text = self.cmd_input.text().strip()
+        if text:
+            self.cmd_input.clear()
+            logger.info(f"Manual text command submitted via UI input box: '{text}'")
+            self.sig_command_submitted.emit(text)
             
     def _on_history_updated(self, history_records: list):
         self.history_display.clear()

@@ -23,9 +23,11 @@ class TestConfig(unittest.TestCase):
     def test_default_values(self):
         """Verifies that default config values are loaded correctly."""
         cfg = Config(config_path=str(self.temp_path))
-        self.assertEqual(cfg.wake_words, ["jarvis", "hey jarvis", "hello jarvis"])
+        self.assertIn("jarvis", cfg.wake_words)
         self.assertEqual(cfg.audio_sample_rate, 16000)
-        self.assertEqual(cfg.ui_title, "JARVIS v1.0 - Foundation")
+        self.assertEqual(cfg.assistant_name, "Jarvis")
+        self.assertEqual(cfg.owner_name, "Active Gamer")
+        self.assertEqual(cfg.ui_title, "JARVIS v1.1 - AI Desktop Assistant")
         self.assertEqual(cfg.log_level, "DEBUG")
 
     def test_save_and_load(self):

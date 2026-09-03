@@ -1,0 +1,52 @@
+{
+    "chrome": {
+        "windows": "chrome",
+        "linux": "google-chrome",
+        "aliases": ["chrome", "google chrome", "browser"]
+    },
+    "vscode": {
+        "windows": "code",
+        "linux": "code",
+        "aliases": ["vscode", "vs code", "visual studio code", "code"]
+    },
+    "steam": {
+        "windows": "steam",
+        "linux": "steam",
+        "aliases": ["steam"]
+    },
+    "firefox": {
+        "windows": "firefox",
+        "linux": "firefox",
+        "aliases": ["firefox", "mozilla firefox"]
+    },
+    "edge": {
+        "windows": "msedge",
+        "linux": "microsoft-edge",
+        "aliases": ["edge", "microsoft edge"]
+    },
+    "notepad": {
+        "windows": "notepad",
+        "linux": "gedit",
+        "aliases": ["notepad", "text editor"]
+    },
+    "calculator": {
+        "windows": "calc",
+        "linux": "gnome-calculator",
+        "aliases": ["calculator", "calc"]
+    },
+    "spotify": {
+        "windows": "spotify",
+        "linux": "spotify",
+        "aliases": ["spotify"]
+    },
+    "discord": {
+        "windows": "discord",
+        "linux": "discord",
+        "aliases": ["discord"]
+    },
+    "explorer": {
+        "windows": "explorer",
+        "linux": "nautilus",
+        "aliases": ["explorer", "file explorer", "files"]
+    }
+}

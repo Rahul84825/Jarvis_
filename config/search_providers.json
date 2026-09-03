@@ -1,0 +1,17 @@
+{
+  "google": {
+    "base_url": "https://www.google.com/search?q={query}"
+  },
+  "youtube": {
+    "base_url": "https://www.youtube.com/results?search_query={query}"
+  },
+  "github": {
+    "base_url": "https://github.com/search?q={query}"
+  },
+  "reddit": {
+    "base_url": "https://www.reddit.com/search/?q={query}"
+  },
+  "stackoverflow": {
+    "base_url": "https://stackoverflow.com/search?q={query}"
+  }
+}

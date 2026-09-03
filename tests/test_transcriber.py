@@ -43,12 +43,35 @@ class TestSpeechTranscriber(unittest.TestCase):
         
         # Assertions
         self.assertEqual(text, "Hello this is Jarvis.")
+        initial_prompt = "Jarvis, open VS Code, YouTube, Chrome, Spotify, Notepad, Calculator, lock computer, take a screenshot, calculate, system status, shutdown, restart, volume up, volume down, mute, unmute, minimize, maximize, what time is it, what is the date, search google, play music."
         mock_model_instance.transcribe.assert_called_once_with(
             "dummy_file.wav",
             beam_size=5,
             language="en",
-            vad_filter=True
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=False,
+            vad_filter=False
         )
+
+    @patch('pathlib.Path.exists')
+    @patch('faster_whisper.WhisperModel')
+    def test_phonetic_replacements(self, mock_whisper_model, mock_exists):
+        """Verifies that common speech misrecognitions are corrected."""
+        mock_exists.return_value = True
+        segment = MagicMock()
+        segment.text = "Open vee es code and you tube"
+        info = MagicMock()
+        info.language = "en"
+        info.language_probability = 0.99
+        info.duration = 2.5
+
+        mock_model_instance = MagicMock()
+        mock_model_instance.transcribe.return_value = ([segment], info)
+        mock_whisper_model.return_value = mock_model_instance
+
+        transcriber = SpeechTranscriber(model_size="base", device="cpu")
+        text = transcriber.transcribe("dummy_file.wav")
+        self.assertEqual(text, "Open VS Code and YouTube")
 
     def test_missing_audio_file(self):
         """Verifies that FileNotFoundError is raised if audio file does not exist."""

@@ -1,2 +1,3 @@
-# Jarvis Browser Module
-# Placeholder for browser control capabilities (Week 2+).
+from modules.browser.web_control import web_control, WebControl
+
+__all__ = ["web_control", "WebControl"]

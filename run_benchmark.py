@@ -31,7 +31,8 @@ VOICES = [
 
 RATES = ["-20%", "-15%", "-10%", "-5%", "+0%", "+5%", "+10%", "+15%", "+20%", "+25%"]
 
-AUDIO_DIR = Path("C:/Users/activ/Desktop/Jarvis/logs/benchmark_audio")
+BASE_DIR = Path(__file__).parent.resolve()
+AUDIO_DIR = BASE_DIR / "logs" / "benchmark_audio"
 
 def clean(text):
     text = text.lower().strip()
@@ -143,7 +144,7 @@ def run_transcriptions(model_size):
     return results
 
 def generate_report(base_results, small_results):
-    report_path = Path("C:/Users/activ/Desktop/Jarvis/SPEECH_ACCURACY_REPORT.md")
+    report_path = BASE_DIR / "SPEECH_ACCURACY_REPORT.md"
     
     # Calculate stats
     base_correct = sum(1 for r in base_results if r["matched"])

@@ -1,0 +1,141 @@
+{
+  "test_commands": [
+    {
+      "phrase": "Hey Jarvis",
+      "expected_intent": "wake_word",
+      "category": "wake"
+    },
+    {
+      "phrase": "Hello Jarvis",
+      "expected_intent": "wake_word",
+      "category": "wake"
+    },
+    {
+      "phrase": "Open Chrome",
+      "expected_intent": "open_app",
+      "target": "chrome",
+      "category": "app_control"
+    },
+    {
+      "phrase": "Open Google Chrome",
+      "expected_intent": "open_app",
+      "target": "chrome",
+      "category": "app_control"
+    },
+    {
+      "phrase": "Open VS Code",
+      "expected_intent": "open_app",
+      "target": "vscode",
+      "category": "app_control"
+    },
+    {
+      "phrase": "Open Visual Studio Code",
+      "expected_intent": "open_app",
+      "target": "vscode",
+      "category": "app_control"
+    },
+    {
+      "phrase": "Open Downloads",
+      "expected_intent": "open_folder",
+      "target": "downloads",
+      "category": "os_control"
+    },
+    {
+      "phrase": "Take a screenshot",
+      "expected_intent": "screenshot",
+      "category": "os_control"
+    },
+    {
+      "phrase": "Volume up",
+      "expected_intent": "volume_up",
+      "category": "os_control"
+    },
+    {
+      "phrase": "Increase the volume",
+      "expected_intent": "volume_up",
+      "category": "os_control"
+    },
+    {
+      "phrase": "Volume down",
+      "expected_intent": "volume_down",
+      "category": "os_control"
+    },
+    {
+      "phrase": "Decrease the volume",
+      "expected_intent": "volume_down",
+      "category": "os_control"
+    },
+    {
+      "phrase": "Lock the computer",
+      "expected_intent": "lock_pc",
+      "category": "os_control"
+    },
+    {
+      "phrase": "Open YouTube",
+      "expected_intent": "open_website",
+      "target": "youtube",
+      "category": "web_navigation"
+    },
+    {
+      "phrase": "Search Google for Python tutorials",
+      "expected_intent": "web_search",
+      "provider": "google",
+      "query": "Python tutorials",
+      "category": "web_search"
+    },
+    {
+      "phrase": "Search YouTube for React tutorials",
+      "expected_intent": "web_search",
+      "provider": "youtube",
+      "query": "React tutorials",
+      "category": "web_search"
+    },
+    {
+      "phrase": "Close Calculator",
+      "expected_intent": "close_app",
+      "target": "calculator",
+      "category": "app_control"
+    },
+    {
+      "phrase": "Close Chrome",
+      "expected_intent": "close_app",
+      "target": "chrome",
+      "category": "app_control"
+    },
+    {
+      "phrase": "Open Chrome and VS Code",
+      "expected_intent": "multi_command",
+      "category": "multi_command"
+    },
+    {
+      "phrase": "Close Calculator and increase the volume",
+      "expected_intent": "multi_command",
+      "category": "multi_command"
+    },
+    {
+      "phrase": "Who are you?",
+      "expected_intent": "conversational",
+      "category": "conversation"
+    },
+    {
+      "phrase": "What can you do?",
+      "expected_intent": "conversational",
+      "category": "conversation"
+    },
+    {
+      "phrase": "How are you?",
+      "expected_intent": "conversational",
+      "category": "conversation"
+    },
+    {
+      "phrase": "Help",
+      "expected_intent": "conversational",
+      "category": "conversation"
+    },
+    {
+      "phrase": "Test my microphone",
+      "expected_intent": "test_microphone",
+      "category": "diagnostics"
+    }
+  ]
+}
