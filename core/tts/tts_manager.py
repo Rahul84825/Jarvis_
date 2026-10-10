@@ -490,9 +490,12 @@ class TTSManager:
         except Exception as e:
             logger.debug(f"Could not remove file {path}: {e}")
 
-    def _trigger_callback(self, cb):
+    def _trigger_callback(self, cb, *args):
         if cb:
             try:
-                threading.Thread(target=cb, name="TTSCallbackThread", daemon=True).start()
+                if args:
+                    cb(*args)
+                else:
+                    threading.Thread(target=cb, name="TTSCallbackThread", daemon=True).start()
             except Exception as e:
                 logger.error(f"Error triggering TTS callback: {e}")

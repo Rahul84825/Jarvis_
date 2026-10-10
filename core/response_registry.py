@@ -178,9 +178,25 @@ class CommandResponseRegistry:
             return "Here are my supported capabilities, Sir."
 
         if intent == "web_search":
-            if evidence_msg and "searching " in evidence_msg.lower():
+            if evidence_msg and ("opened " in evidence_msg.lower() or "searching " in evidence_msg.lower() or "search results" in evidence_msg.lower()):
                 return evidence_msg
+            provider = intent_node.get("provider", "web")
+            prov_name = "YouTube" if provider == "youtube" else ("GitHub" if provider == "github" else provider.title())
+            query = intent_node.get("query") or intent_node.get("target") or ""
+            if query:
+                return f"I opened {prov_name} search results for '{query}'."
             return "Here are the search results, Sir."
+
+        if intent in ["browser_tab_control", "browser_control"]:
+            if evidence_msg:
+                return evidence_msg
+            if action == "close_tab":
+                return "Closed the tab, Sir."
+            if action == "switch_tab":
+                return "Switched tab, Sir."
+            if action == "new_tab":
+                return "Opened a new tab, Sir."
+            return "Browser action completed, Sir."
 
         if intent == "screenshot":
             return "The screenshot has been saved, Sir."
@@ -269,6 +285,11 @@ class CommandResponseRegistry:
             if "network" in reason_lower or "connection" in reason_lower or "unavailable" in reason_lower:
                 return "Search is temporarily unavailable, Sir."
             return "I couldn't complete that search, Sir."
+
+        if intent in ["browser_tab_control", "browser_control"]:
+            if reason:
+                return reason
+            return "I couldn't complete that browser action, Sir."
 
         # Default execution failure from specification
         return "That action failed, Sir. Please try again."

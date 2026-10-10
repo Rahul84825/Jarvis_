@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import logging
@@ -197,7 +198,7 @@ class BrowserManager:
 
         try:
             success = platform_manager.open_browser(resolved_browser, url=target_url)
-            prov_display = "Stack Overflow" if prov_key == "stackoverflow" else prov_key.title()
+            prov_display = "YouTube" if prov_key == "youtube" else ("Stack Overflow" if prov_key == "stackoverflow" else ("GitHub" if prov_key == "github" else prov_key.title()))
 
             if success:
                 logger.info(f"[BROWSER_RESULT] Result: SUCCESS")
@@ -207,7 +208,7 @@ class BrowserManager:
                     "provider": prov_key,
                     "query": query,
                     "url": target_url,
-                    "message": f"Searching {prov_display}."
+                    "message": f"Searching {prov_display}. I opened {prov_display} search results for '{query}'."
                 }
 
             logger.warning(f"[BROWSER_RESULT] Result: FAILED")
@@ -381,19 +382,112 @@ class BrowserManager:
         success = self._send_shortcut(ctrl=True, vk=0x54)
         return {"success": success, "message": "Opened new tab in browser." if success else "Failed to open new tab."}
 
-    def close_tab(self, tab_id: str = None) -> Dict[str, Any]:
+    def find_matching_tabs(self, target_query: str) -> List[Dict[str, Any]]:
+        """Finds open CDP tabs matching title or URL query (case-insensitive substring)."""
+        if not self.cdp.is_available() or not target_query:
+            return []
+        clean_q = target_query.lower().strip()
+        clean_q = re.sub(r"\s+tab$", "", clean_q).strip()
+        tabs = self.cdp.list_tabs()
+        matches = []
+        for t in tabs:
+            title = (t.get("title") or "").lower()
+            url = (t.get("url") or "").lower()
+            if clean_q in title or clean_q in url:
+                matches.append(t)
+        return matches
+
+    def close_tab(self, target: str = None, tab_id: str = None) -> Dict[str, Any]:
         """Closes the active or specified browser tab."""
+        # 1. Direct tab ID via CDP
         if tab_id and self.cdp.is_available():
             closed = self.cdp.close_tab(tab_id)
             if closed:
                 return {"success": True, "message": f"Closed browser tab {tab_id}."}
+            return {"success": False, "message": f"Failed to close browser tab {tab_id}."}
 
+        # 2. Targeted tab resolution by name/query
+        if target and target.lower() not in ["active", "current", "chrome", "this", ""]:
+            clean_target = re.sub(r"\s+tab$", "", target, flags=re.IGNORECASE).strip()
+            if self.cdp.is_available():
+                matches = self.find_matching_tabs(clean_target)
+                if len(matches) == 1:
+                    tid = matches[0].get("id")
+                    title = matches[0].get("title", clean_target)
+                    closed = self.cdp.close_tab(tid)
+                    if closed:
+                        return {"success": True, "message": f"Closed the '{title}' tab."}
+                    return {"success": False, "message": f"Failed to close the '{title}' tab."}
+                elif len(matches) > 1:
+                    titles = [f"'{t.get('title', 'Untitled')}'" for t in matches[:3]]
+                    return {
+                        "success": False,
+                        "ambiguous": True,
+                        "message": f"Multiple tabs matched '{clean_target}': {', '.join(titles)}. Please specify which tab to close."
+                    }
+                else:
+                    return {"success": False, "message": f"No tab matching '{clean_target}' was found in Chrome."}
+            else:
+                return {
+                    "success": False,
+                    "cdp_required": True,
+                    "message": f"Controlling background tabs by name requires Chrome with remote debugging. Launch Chrome with '--remote-debugging-port=9222' to enable targeted tab control."
+                }
+
+        # 3. Active / current tab via keyboard shortcut
         if not self.focus_browser():
             return {"success": False, "verified": False, "message": "No active browser window found or window could not be focused."}
 
         # Ctrl+W (0x57)
         success = self._send_shortcut(ctrl=True, vk=0x57)
         return {"success": success, "message": "Closed active browser tab." if success else "Failed to close tab."}
+
+    def switch_tab(self, target: str = None) -> Dict[str, Any]:
+        """Switches to a specifically named tab via CDP, or cycles tabs."""
+        if target and target.lower() not in ["active", "current", "chrome", "next", ""]:
+            clean_target = re.sub(r"\s+tab$", "", target, flags=re.IGNORECASE).strip()
+            if self.cdp.is_available():
+                matches = self.find_matching_tabs(clean_target)
+                if len(matches) == 1:
+                    tid = matches[0].get("id")
+                    title = matches[0].get("title", clean_target)
+                    activated = self.cdp.activate_tab(tid)
+                    if activated:
+                        self.focus_browser()
+                        return {"success": True, "message": f"Switched to '{title}' tab."}
+                    return {"success": False, "message": f"Failed to switch to '{title}' tab."}
+                elif len(matches) > 1:
+                    titles = [f"'{t.get('title', 'Untitled')}'" for t in matches[:3]]
+                    return {
+                        "success": False,
+                        "ambiguous": True,
+                        "message": f"Multiple tabs matched '{clean_target}': {', '.join(titles)}. Please specify which tab to switch to."
+                    }
+                else:
+                    return {"success": False, "message": f"No tab matching '{clean_target}' was found in Chrome."}
+            else:
+                return {
+                    "success": False,
+                    "cdp_required": True,
+                    "message": f"Switching to specific background tabs requires Chrome with remote debugging. Launch Chrome with '--remote-debugging-port=9222' to enable targeted tab switching."
+                }
+        return self.next_tab()
+
+    def list_open_tabs(self) -> Dict[str, Any]:
+        """Lists currently open Chrome tabs via CDP."""
+        if not self.cdp.is_available():
+            return {
+                "success": False,
+                "message": "Listing tabs requires Chrome running with remote debugging. Launch Chrome with '--remote-debugging-port=9222' to enable tab discovery."
+            }
+        tabs = self.cdp.list_tabs()
+        if not tabs:
+            return {"success": True, "tabs": [], "message": "No open tabs found in Chrome."}
+        titles = [t.get("title", "Untitled") for t in tabs]
+        msg = f"You have {len(tabs)} open tabs: " + ", ".join(f"'{title}'" for title in titles[:5])
+        if len(tabs) > 5:
+            msg += f", and {len(tabs) - 5} more."
+        return {"success": True, "tabs": tabs, "message": msg}
 
     def reopen_closed_tab(self) -> Dict[str, Any]:
         """Reopens the last closed browser tab using Ctrl+Shift+T."""

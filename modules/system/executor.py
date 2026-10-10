@@ -831,9 +831,16 @@ class CommandExecutor:
             return False, f"Unknown system control action: {action}"
 
     def _handle_browser_control(self, action: str, target: str, intent_node: dict) -> (bool, str):
+        tab_target = intent_node.get("tab_target") or target or ""
         if action == "close_tab":
-            res = self.browser_mgr.close_tab()
+            res = self.browser_mgr.close_tab(target=tab_target)
             return res.get("success", False), res.get("message", "Closed active tab.")
+        elif action == "switch_tab":
+            res = self.browser_mgr.switch_tab(target=tab_target)
+            return res.get("success", False), res.get("message", "Switched tab.")
+        elif action == "list_tabs":
+            res = self.browser_mgr.list_open_tabs()
+            return res.get("success", False), res.get("message", "Listed open tabs.")
         elif action == "new_tab":
             res = self.browser_mgr.new_tab(url=target)
             return res.get("success", False), res.get("message", "Opened new tab.")

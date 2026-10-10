@@ -607,11 +607,13 @@ class JarvisRuntime:
                 "message": invalid_msg
             }
 
-        # 4. Acknowledgment before potentially longer operations
-        ack_msg = self.response_registry.get_acknowledgment(intent_node)
-        if ack_msg and speak:
-            logger.info(f"[ACKNOWLEDGMENT] Speaking: '{ack_msg}'")
-            self.response_manager.acknowledge_command(ack_msg, speak=speak)
+        # 4. Acknowledgment only before long-running / multi-step operations
+        # For immediate local operations (<150ms), produce one final response to prevent speech collisions
+        if intent in ["content_generation", "multi_step_workflow"] or intent_node.get("is_long_running"):
+            ack_msg = self.response_registry.get_acknowledgment(intent_node)
+            if ack_msg and speak:
+                logger.info(f"[ACKNOWLEDGMENT] Speaking: '{ack_msg}'")
+                self.response_manager.acknowledge_command(ack_msg, speak=speak)
 
         trace = tracer.get_current_trace()
         t_tool_start = time.time()

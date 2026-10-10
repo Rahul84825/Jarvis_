@@ -696,6 +696,11 @@ class IntentEngine:
         if clean in ["list open windows", "list windows", "show open windows", "open windows"]:
             return {"intent": "window_control", "action": "list_open", "target": None, "confidence": 0.92, "query": clean, "raw_text": raw_text}
 
+        # Specific tab switch: "switch to the Python tutorials tab", "switch to tab Python tutorials"
+        switch_tab_m = re.match(r"^(?:switch|go)\s+to\s+(?:the\s+)?(.+?)\s+tab$", clean, re.IGNORECASE)
+        if switch_tab_m:
+            return {"intent": "browser_tab_control", "action": "switch_tab", "target": "chrome", "tab_target": switch_tab_m.group(1).strip(), "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
         if clean.startswith("switch to") or clean.startswith("focus"):
             target = clean.replace("switch to", "").replace("focus", "").strip()
             resolved = self.resolve_app_name(target)
@@ -745,8 +750,31 @@ class IntentEngine:
         # -------------------------------------------------------------
         # 17. CLOSE APP INTENTS
         # -------------------------------------------------------------
+        # Specific tab close: "close the Python tutorials tab", "close tab Python tutorials", "close tab"
+        close_tab_m = re.match(r"^(?:close|shut)\s+(?:the\s+)?(.+?)\s+tab$", clean, re.IGNORECASE)
+        if close_tab_m:
+            tab_target = close_tab_m.group(1).strip()
+            if tab_target.lower() in ["active", "current", "chrome", "this", ""]:
+                return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": "active", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": tab_target, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        close_tab_prefix_m = re.match(r"^(?:close|shut)\s+tab\s+(.+)$", clean, re.IGNORECASE)
+        if close_tab_prefix_m:
+            tab_target = close_tab_prefix_m.group(1).strip()
+            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": tab_target, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
         if re.match(r"^(?:close|shut)\s+(?:the\s+)?(?:active\s+|current\s+)?(?:chrome\s+)?tab$", clean, re.IGNORECASE):
-            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": "active", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Specific tab switch: "switch to the Python tutorials tab", "switch to tab Python tutorials"
+        switch_tab_m = re.match(r"^(?:switch|go)\s+to\s+(?:the\s+)?(.+?)\s+tab$", clean, re.IGNORECASE)
+        if switch_tab_m:
+            return {"intent": "browser_tab_control", "action": "switch_tab", "target": "chrome", "tab_target": switch_tab_m.group(1).strip(), "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Tab listing: "list open tabs", "show open tabs", "list tabs"
+        list_tabs_m = re.match(r"^(?:list|show|what\s+are)\s+(?:all\s+)?(?:the\s+)?(?:open\s+)?(?:browser\s+|chrome\s+)?tabs$", clean, re.IGNORECASE)
+        if list_tabs_m:
+            return {"intent": "browser_tab_control", "action": "list_tabs", "target": "chrome", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
 
         close_patterns = [
             r"^(?:close|exit|quit|stop|shut\s*down|shut|terminate|end|kill|get\s+rid\s+of)\s+(?:the\s+|my\s+)?(.+)$",
