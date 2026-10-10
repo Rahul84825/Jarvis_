@@ -86,7 +86,19 @@ class CommandExecutor:
         message = ""
 
         try:
-            if intent == "open_website":
+            if intent in ["open_new_chrome_tab", "new_chrome_tab"]:
+                url = intent_node.get("url")
+                res = self.browser_mgr.open_new_chrome_tab(url=url)
+                success = res["success"]
+                message = res["message"]
+
+            elif intent in ["open_new_chrome_window", "new_chrome_window"]:
+                url = intent_node.get("url")
+                res = self.browser_mgr.open_new_chrome_window(url=url)
+                success = res["success"]
+                message = res["message"]
+
+            elif intent == "open_website":
                 success, message = web_control.open_website(target)
 
             elif intent == "web_search":
@@ -112,7 +124,7 @@ class CommandExecutor:
                 import re, math
                 query_str = target or intent_node.get("query", "")
                 q = query_str.lower()
-                q = re.sub(r'^(calculate|what is|how much is|solve|math)\s+', '', q).strip(' ?')
+                q = re.sub(r'^(calculate|what is|how much is|solve|math|watch|what s|whats)\s+', '', q).strip(' ?')
                 pct_match = re.search(r'([\d\.]+)\s*(?:%|percent)\s*(?:of)\s*([\d\.]+)', q)
                 if pct_match:
                     val = (float(pct_match.group(1)) / 100.0) * float(pct_match.group(2))
@@ -122,6 +134,7 @@ class CommandExecutor:
                     try:
                         q = re.sub(r'([\d\.]+)\s*(?:to the power of|\^)\s*([\d\.]+)', r'math.pow(\1, \2)', q)
                         q = re.sub(r'(?:square root of|sqrt)\s*([\d\.]+)', r'math.sqrt(\1)', q)
+                        q = re.sub(r'(\d+)\s*[xX]\s*(\d+)', r'\1 * \2', q)
                         q = q.replace(' multiplied by ', ' * ').replace(' times ', ' * ').replace(' x ', ' * ')
                         q = q.replace(' divided by ', ' / ').replace(' plus ', ' + ').replace(' minus ', ' - ')
                         allowed_names = {'math': math, 'sqrt': math.sqrt, 'pow': math.pow, 'sin': math.sin, 'cos': math.cos, 'tan': math.tan, 'pi': math.pi}
@@ -164,9 +177,10 @@ class CommandExecutor:
                     success = False
                     message = "Failed to send media control command."
 
-            elif intent == "test_speech":
+            elif intent in ["test_speech", "test_speakers"]:
+                from core.tts.tts_manager import TTSManager
                 success = True
-                message = "Speech synthesis is active and operational."
+                message = "Speaker audio output is operational."
 
             elif intent == "test_microphone":
                 from core.listener import SpeechListener
@@ -180,7 +194,7 @@ class CommandExecutor:
                     message = "No application specified."
                 else:
                     success = app_control.open_app(target)
-                    message = f"Launched {target} successfully." if success else f"Failed to launch {target}."
+                    message = f"Opening {target}." if success else f"Failed to launch {target}."
 
             elif intent == "close_app":
                 if not target:
@@ -188,6 +202,14 @@ class CommandExecutor:
                 else:
                     success = app_control.close_app(target)
                     message = f"Closed {target} successfully." if success else f"Failed to close {target} (maybe not running)."
+
+            elif intent == "minimize_app":
+                success = app_control.minimize_app(target)
+                message = f"Minimized {target}." if (success and target) else ("Window minimized." if success else f"Failed to minimize {target or 'window'}.")
+
+            elif intent == "maximize_app":
+                success = app_control.maximize_app(target)
+                message = f"Maximized {target}." if (success and target) else ("Window maximized." if success else f"Failed to maximize {target or 'window'}.")
 
             elif intent == "window_control":
                 success, message = self._handle_window_control(action, target)
@@ -405,6 +427,8 @@ class CommandExecutor:
             return system_control.lock_pc()
         elif action in ["sleep", "sleep_pc"]:
             return system_control.sleep_pc()
+        elif action in ["hibernate", "hibernate_pc"]:
+            return system_control.hibernate_pc()
         elif action in ["restart", "restart_pc"]:
             return system_control.restart_pc()
         elif action in ["shutdown", "shutdown_pc"]:

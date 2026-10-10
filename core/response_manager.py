@@ -3,6 +3,7 @@ import logging
 from enum import Enum
 
 from core.local_response_engine import LocalResponseEngine
+from core.speech_sanitizer import sanitize_speech_text, enforce_conversational_brevity
 
 logger = logging.getLogger("Jarvis.ResponseManager")
 
@@ -70,6 +71,8 @@ class ResponseManager:
         logger.info(f"Response Manager [{resp_type}]: '{text}' (Spoken: '{spoken_text}')")
 
         if spoken_text:
+            spoken_text = sanitize_speech_text(spoken_text)
+            spoken_text = enforce_conversational_brevity(spoken_text, max_sentences=2)
             self.last_spoken_response = spoken_text
 
         if speak and self.speaker and spoken_text:

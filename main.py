@@ -63,40 +63,40 @@ def run_ui_mode(start_minimized=False):
     app.setQuitOnLastWindowClosed(False)
 
     runtime = JarvisRuntime()
-    window = None
+    window = MainWindow()
 
-    def _on_window_closed():
-        nonlocal window
-        logger.info("MainWindow closed signal intercepted. De-coupling references from coordinator.")
-        window = None
+    # Map UI button triggers to runtime
+    window.trigger_wakeword_cb = lambda: runtime._on_wakeword("jarvis")
+    window.toggle_mute_cb = lambda muted: runtime.set_mute_state(muted)
+
+    # Map typed command submission
+    window.sig_command_submitted.connect(lambda cmd: runtime.process_command(cmd))
+
+    # Map safety permission dialog response
+    window.sig_permission_resolved.connect(lambda confirmed: runtime.resolve_permission(confirmed))
+
+    def safe_emit(signal_obj, *args):
+        try:
+            signal_obj.emit(*args)
+        except RuntimeError:
+            pass
+
+    # Connect runtime observers to UI signals
+    runtime.register_observers(
+        on_status_change=lambda status: safe_emit(window.sig_status_changed, status),
+        on_speech_text=lambda text: safe_emit(window.sig_speech_text_updated, text),
+        on_pipeline_stage=lambda raw, norm, intent, exec_str, resp, state: safe_emit(window.sig_pipeline_stage_updated, raw, norm, intent, exec_str, resp, state),
+        on_action_complete=lambda action, success, msg: safe_emit(window.sig_last_action_updated, action, success, msg),
+        on_history_update=lambda history: safe_emit(window.sig_history_updated, history),
+        on_permission_dialog=lambda action, msg: safe_emit(window.sig_show_permission_dialog, action, msg),
+        on_speech_debug=lambda text, conf, lang, dur: safe_emit(window.sig_speech_debug_updated, text, conf, lang, dur),
+        on_audio_amplitude=lambda amp: safe_emit(window.sig_audio_amplitude_updated, amp),
+        on_camera_state=lambda event: safe_emit(window.sig_camera_state_updated, event),
+        on_gesture=lambda event: safe_emit(window.sig_gesture_detected, event)
+    )
+
 
     def show_window():
-        nonlocal window
-        if not window:
-            window = MainWindow()
-            window.sig_closed.connect(_on_window_closed)
-
-            # Map UI button triggers to runtime
-            window.trigger_wakeword_cb = lambda: runtime._on_wakeword("jarvis")
-            window.toggle_mute_cb = lambda muted: runtime.set_mute_state(muted)
-
-            # Map typed command submission
-            window.sig_command_submitted.connect(lambda cmd: runtime.process_command(cmd))
-
-            # Map safety permission dialog response
-            window.sig_permission_resolved.connect(lambda confirmed: runtime.resolve_permission(confirmed))
-
-            # Connect runtime observers to UI signals
-            runtime.register_observers(
-                on_status_change=lambda status: window and window.sig_status_changed.emit(status),
-                on_speech_text=lambda text: window and window.sig_speech_text_updated.emit(text),
-                on_pipeline_stage=lambda raw, norm, intent, exec_str, resp, state: window and window.sig_pipeline_stage_updated.emit(raw, norm, intent, exec_str, resp, state),
-                on_action_complete=lambda action, success, msg: window and window.sig_last_action_updated.emit(action, success, msg),
-                on_history_update=lambda history: window and window.sig_history_updated.emit(history),
-                on_permission_dialog=lambda action, msg: window and window.sig_show_permission_dialog.emit(action, msg),
-                on_speech_debug=lambda text, conf, lang, dur: window and window.sig_speech_debug_updated.emit(text, conf, lang, dur)
-            )
-
         window.show()
         window.raise_()
         window.activateWindow()
@@ -104,17 +104,15 @@ def run_ui_mode(start_minimized=False):
     # System Tray
     tray_icon = QSystemTrayIcon()
     from PyQt6.QtWidgets import QStyle
-    dummy = MainWindow()
-    icon = dummy.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
-    dummy.close()
+    icon = app.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
 
     tray_icon.setIcon(icon)
-    tray_icon.setToolTip("GOLIYA Assistant Core")
+    tray_icon.setToolTip("JARVIS Autonomous Assistant Core")
     menu = QMenu()
 
     show_action = QAction("Open HUD Dashboard", menu)
     show_action.triggered.connect(show_window)
-    exit_action = QAction("Shut Down Goliya", menu)
+    exit_action = QAction("Shut Down Jarvis", menu)
     exit_action.triggered.connect(lambda: (runtime.stop(), tray_icon.hide(), app.quit()))
 
     menu.addAction(show_action)
@@ -126,7 +124,7 @@ def run_ui_mode(start_minimized=False):
     runtime.start()
 
     if not start_minimized:
-        QTimer.singleShot(0, show_window)
+        show_window()
 
     sys.exit(app.exec())
 

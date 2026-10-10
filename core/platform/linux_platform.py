@@ -153,6 +153,72 @@ class LinuxPlatform(BasePlatform):
                 pass
         return False
 
+    def minimize_application(self, app_key: str = None) -> bool:
+        xdotool = shutil.which("xdotool")
+        if xdotool:
+            try:
+                if not app_key:
+                    res = subprocess.run([xdotool, "getactivewindow", "windowminimize"], capture_output=True)
+                    return res.returncode == 0
+                key = self.resolve_app_key(app_key)
+                res = subprocess.run([xdotool, "search", "--name", key, "windowminimize"], capture_output=True)
+                return res.returncode == 0
+            except Exception:
+                pass
+        return False
+
+    def maximize_application(self, app_key: str = None) -> bool:
+        wmctrl = shutil.which("wmctrl")
+        if wmctrl:
+            try:
+                if not app_key:
+                    res = subprocess.run([wmctrl, "-r", ":ACTIVE:", "-b", "add,maximized_vert,maximized_horz"], capture_output=True)
+                    return res.returncode == 0
+                key = self.resolve_app_key(app_key)
+                res = subprocess.run([wmctrl, "-r", key, "-b", "add,maximized_vert,maximized_horz"], capture_output=True)
+                return res.returncode == 0
+            except Exception:
+                pass
+        return False
+
+    def open_file(self, file_path_or_name: str) -> Tuple[bool, str, list]:
+        if not file_path_or_name:
+            return False, "No file specified.", []
+
+        clean_path = Path(file_path_or_name.strip('"\''))
+        if clean_path.is_absolute() and clean_path.exists() and clean_path.is_file():
+            try:
+                subprocess.Popen(["xdg-open", str(clean_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True, f"Opened file {clean_path.name}.", []
+            except Exception as e:
+                return False, f"Could not open file: {e}", []
+
+        home = Path.home()
+        search_dirs = [home / "Downloads", home / "Documents", home / "Desktop", home / "Pictures", home / "Videos", home / "Music"]
+        target_name = clean_path.name.lower()
+        matches = []
+        for sdir in search_dirs:
+            if sdir.exists():
+                try:
+                    for f in sdir.iterdir():
+                        if f.is_file():
+                            if f.name.lower() == target_name or (not clean_path.suffix and f.stem.lower() == target_name):
+                                matches.append(f)
+                except Exception:
+                    pass
+
+        if len(matches) == 1:
+            try:
+                subprocess.Popen(["xdg-open", str(matches[0])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True, f"Opened {matches[0].name}.", []
+            except Exception as e:
+                return False, f"Could not open file: {e}", []
+        elif len(matches) > 1:
+            match_paths = [str(m) for m in matches[:5]]
+            return False, f"I found multiple files matching '{file_path_or_name}'. Which one should I open?", match_paths
+        else:
+            return False, f"I couldn't find a file matching '{file_path_or_name}'.", []
+
     # ==========================================
     # FOLDER CONTROL
     # ==========================================
@@ -260,6 +326,48 @@ class LinuxPlatform(BasePlatform):
 
         return self.open_url(url) if url else True
 
+    def open_new_browser_tab(self, browser_name: str = "chrome", url: str = None) -> bool:
+        """Opens a new tab in the running browser session on Linux."""
+        b_key = browser_name.lower().strip()
+        exec_path = self._probe_browser_executable(b_key)
+        target_url = url or "chrome://newtab"
+
+        if self.is_application_running(b_key) and exec_path:
+            try:
+                subprocess.Popen([exec_path, target_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                logger.info(f"[Linux] Opened new tab in existing '{b_key}' session via CLI.")
+                return True
+            except Exception as e:
+                logger.warning(f"[Linux] Failed to open new tab via subprocess ({e}). Trying fallback.")
+
+        try:
+            return webbrowser.open_new_tab(target_url if target_url != "chrome://newtab" else "https://www.google.com")
+        except Exception as e:
+            logger.error(f"[Linux] Fallback open_new_tab failed: {e}")
+            return self.open_browser(browser_name, url=url)
+
+    def open_new_browser_window(self, browser_name: str = "chrome", url: str = None) -> bool:
+        """Opens a new independent browser window on Linux preserving existing windows and tabs."""
+        b_key = browser_name.lower().strip()
+        exec_path = self._probe_browser_executable(b_key)
+
+        if exec_path:
+            cmd = [exec_path, "--new-window"]
+            if url:
+                cmd.append(url)
+            try:
+                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                logger.info(f"[Linux] Opened new independent window for '{b_key}' with command {cmd}.")
+                return True
+            except Exception as e:
+                logger.error(f"[Linux] Failed to launch new window via --new-window flag: {e}")
+
+        try:
+            return webbrowser.open_new(url or "https://www.google.com")
+        except Exception as e:
+            logger.error(f"[Linux] Fallback open_new window failed: {e}")
+            return False
+
     # ==========================================
     # SYSTEM CONTROL (PulseAudio / PipeWire / systemctl)
     # ==========================================
@@ -362,6 +470,16 @@ class LinuxPlatform(BasePlatform):
             try:
                 subprocess.Popen(["systemctl", "poweroff"])
                 return True, "Shutting down computer immediately."
+            except Exception:
+                pass
+        return False, "This operation is not supported on the current system."
+
+    def hibernate_pc(self) -> Tuple[bool, str]:
+        if shutil.which("systemctl"):
+            try:
+                res = subprocess.run(["systemctl", "hibernate"], capture_output=True)
+                if res.returncode == 0:
+                    return True, "Putting computer into hibernation."
             except Exception:
                 pass
         return False, "This operation is not supported on the current system."

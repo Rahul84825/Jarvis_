@@ -75,14 +75,23 @@ class TestJarvisConversation(unittest.TestCase):
             ("Open ChatGPT", "chatgpt"),
             ("Open Claude", "claude"),
             ("Open Gemini", "gemini"),
-            ("Open Spotify", "spotify"),
-            ("Open Netflix", "netflix"),
-            ("Open Discord", "discord")
+            ("Open Netflix", "netflix")
         ]
         for phrase, expected_target in websites:
             with self.subTest(phrase=phrase):
                 intent_node = self.intent_engine.parse(phrase)
                 self.assertEqual(intent_node["intent"], "open_website")
+                self.assertEqual(intent_node["target"], expected_target)
+
+        # App-first targets
+        app_targets = [
+            ("Open Spotify", "spotify"),
+            ("Open Discord", "discord")
+        ]
+        for phrase, expected_target in app_targets:
+            with self.subTest(phrase=phrase):
+                intent_node = self.intent_engine.parse(phrase)
+                self.assertEqual(intent_node["intent"], "open_app")
                 self.assertEqual(intent_node["target"], expected_target)
 
     def test_fuzzy_shortcuts(self):

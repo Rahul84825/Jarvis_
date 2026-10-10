@@ -1,32 +1,27 @@
 import logging
+from core.ai.agent_brain import agent_brain
 
 logger = logging.getLogger("Jarvis.Brain")
 
 class Brain:
-    def __init__(self):
-        logger.info("Initializing Jarvis Brain Reasoning System (Mock).")
+    """Jarvis Central Brain Reasoning Subsystem.
+    Powered by ReAct AgentBrain with tool calling, memory retrieval, and multi-turn reasoning.
+    """
+    def __init__(self, executor=None):
+        logger.info("Initializing Jarvis Brain Autonomous Reasoning System.")
+        self.agent = agent_brain
+        if executor:
+            self.agent.executor = executor
 
-    def process_text(self, text: str) -> str:
-        """Processes user input text and returns assistant's response.
-        In this foundation version, reasoning is simulated with basic rules.
-        """
+    def process_text(self, text: str, history: list = None) -> str:
+        """Processes user input text, runs reasoning & tool execution, and returns spoken response."""
         logger.info(f"Brain received input: '{text}'")
-        clean_text = text.lower().strip()
-
-        if not clean_text:
+        if not text or not text.strip():
             return "I heard silence. Please speak again if you need assistance."
 
-        if any(word in clean_text for word in ["hello", "hi", "hey"]):
-            return "Hello! I am Jarvis. System online. How may I assist you today?"
-        
-        if "who are you" in clean_text:
-            return "I am Jarvis, your intelligent always-running personal assistant."
-
-        if "system status" in clean_text or "status" in clean_text:
-            return "All core modules are active. Wake word detection is operational, and clap detector is online."
-
-        # Echo the phrase for verification testing
-        return f"I processed your speech: '{text}'. This is a mock response from the Jarvis reasoning foundation."
+        res = self.agent.reason_and_execute(text, conversation_history=history)
+        return res.get("text", "Task completed, sir.")
 
     def shutdown(self):
         logger.info("Jarvis Brain shutting down.")
+

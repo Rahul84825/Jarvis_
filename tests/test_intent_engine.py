@@ -89,7 +89,7 @@ class TestIntentEngine(unittest.TestCase):
         for phrase in phrases:
             with self.subTest(phrase=phrase):
                 res = self.engine.parse(phrase)
-                self.assertIn(res["intent"], ["conversation", "greeting"])
+                self.assertIn(res["intent"], ["conversation", "greeting", "thank_you", "goodbye", "how_are_you", "acknowledgement"])
 
     def test_fallback_routing(self):
         """Verifies that unrecognized phrasings fallback gracefully to conversation."""

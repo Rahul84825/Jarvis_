@@ -85,6 +85,12 @@ class BasePlatform:
     def open_browser(self, browser_name: str = "default", url: str = None) -> bool:
         raise NotImplementedError
 
+    def open_new_browser_tab(self, browser_name: str = "chrome", url: str = None) -> bool:
+        raise NotImplementedError
+
+    def open_new_browser_window(self, browser_name: str = "chrome", url: str = None) -> bool:
+        raise NotImplementedError
+
     # ==========================================
     # SYSTEM CONTROL INTERFACE
     # ==========================================
@@ -109,8 +115,17 @@ class BasePlatform:
     def restart_pc(self) -> Tuple[bool, str]:
         return False, "This operation is not supported on the current system."
 
-    def shutdown_pc(self) -> Tuple[bool, str]:
+    def hibernate_pc(self) -> Tuple[bool, str]:
         return False, "This operation is not supported on the current system."
+
+    def minimize_application(self, app_key: str) -> bool:
+        return False
+
+    def maximize_application(self, app_key: str) -> bool:
+        return False
+
+    def open_file(self, file_path_or_name: str) -> Tuple[bool, str, List[str]]:
+        return False, "This operation is not supported on the current system.", []
 
     def get_battery_status(self) -> Tuple[bool, str]:
         return False, "This operation is not supported on the current system."

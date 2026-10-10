@@ -38,10 +38,14 @@ class SpeechListener:
         self._manual_recording = False
         
         self.on_speech_start_cb = None
-        self.on_speech_end_cb = None  # Signature: callback(wav_path: str)
+        self.on_speech_end_cb = None
+        self.on_barge_in_cb = None  # Signature: callback(wav_path: str)
         
-        # Stabilization lock
+        # Stabilization & Hysteresis
         self.speaking_active = False
+        self._speaking_cooldown_until = 0.0
+        self._consecutive_speech_frames = 0
+        self.MIN_CONSECUTIVE_FRAMES = 3
 
     def set_speaking_active(self, is_speaking: bool):
         """Mutes speech listener background VAD while Jarvis is speaking."""
@@ -55,6 +59,11 @@ class SpeechListener:
                     self._audio_buffer = []
                     self._silence_start = None
                     self._recording_start_time = None
+                    self._consecutive_speech_frames = 0
+            else:
+                # 350ms acoustic cooldown after TTS finishes to let room reverb decay
+                self._speaking_cooldown_until = time.time() + 0.35
+                self._consecutive_speech_frames = 0
 
     def start(self, on_speech_start=None, on_speech_end=None):
         """Starts monitoring the microphone stream for voice activity."""
@@ -75,6 +84,8 @@ class SpeechListener:
             self._audio_buffer = []
             self._pre_roll_buffer = []
             self.speaking_active = False
+            self._speaking_cooldown_until = 0.0
+            self._consecutive_speech_frames = 0
             
             try:
                 self._stream = sd.InputStream(
@@ -103,6 +114,7 @@ class SpeechListener:
             self._recording = False
             self._manual_recording = False
             self._recording_start_time = None
+            self._consecutive_speech_frames = 0
             
             if self._stream:
                 try:
@@ -132,6 +144,7 @@ class SpeechListener:
             self._recording_start_time = time.time()
             self._manual_recording = manual
             self._silence_start = None
+            self._consecutive_speech_frames = 0
             
             if self.on_speech_start_cb:
                 threading.Thread(target=self.on_speech_start_cb, name="ListenerStartCB", daemon=True).start()
@@ -147,6 +160,7 @@ class SpeechListener:
             self._recording = False
             self._manual_recording = False
             self._recording_start_time = None
+            self._consecutive_speech_frames = 0
             
             if self._audio_buffer:
                 captured_data = np.concatenate(self._audio_buffer, axis=0)
@@ -174,61 +188,112 @@ class SpeechListener:
  
         samples = indata[:, 0]
         rms = float(np.sqrt(np.mean(samples**2)))
+        now = time.time()
         
         with self._lock:
             # Dynamically update ambient noise baseline when NOT actively recording speech
             if not self._recording:
                 self._ambient_rms = self._ambient_rms * 0.95 + rms * 0.05
                 
-            # Dynamic speech threshold (at least self.threshold, or 2.0x ambient floor)
-            speech_threshold = max(self.threshold, self._ambient_rms * 2.0)
+            # Dual-threshold Hysteresis
+            onset_threshold = max(self.threshold, self._ambient_rms * 2.2)
+            hold_threshold = max(self.threshold * 0.65, self._ambient_rms * 1.25)
+
+            # Check if currently suppressed by TTS or post-speech acoustic cooldown
+            is_suppressed = self.speaking_active or (now < self._speaking_cooldown_until)
+
+            # Voice Barge-In Detection during active TTS playback
+            if self._running and self.speaking_active:
+                barge_in_threshold = max(0.038, self._ambient_rms * 3.5)
+                if rms > barge_in_threshold:
+                    self._consecutive_speech_frames += 1
+                    if self._consecutive_speech_frames >= self.MIN_CONSECUTIVE_FRAMES:
+                        logger.info(f"[VOICE_BARGE_IN] User speech detected during TTS (RMS: {rms:.4f} > {barge_in_threshold:.4f}). Interrupting speech.")
+                        if self.on_barge_in_cb:
+                            threading.Thread(target=self.on_barge_in_cb, name="BargeInCB", daemon=True).start()
+                        self.speaking_active = False
+                        self._recording = True
+                        self._recording_start_time = now
+                        self._manual_recording = False
+                        self._audio_buffer = list(self._pre_roll_buffer)
+                        self._silence_start = None
+                        self._speech_detected = True
+                        self._consecutive_speech_frames = 0
+                        if self.on_speech_start_cb:
+                            threading.Thread(target=self.on_speech_start_cb, name="ListenerStartCB", daemon=True).start()
+                else:
+                    self._consecutive_speech_frames = 0
 
             # If in standby monitoring mode (VAD)
-            if self._running and not self._recording:
-                if self.enable_vad_onset and rms > speech_threshold:
-                    logger.info(f"VAD: Speech onset detected (RMS: {rms:.4f} > Threshold: {speech_threshold:.4f}, Ambient: {self._ambient_rms:.4f}). Recording started.")
-                    self._recording = True
-                    self._recording_start_time = time.time()
-                    self._manual_recording = False
-                    self._audio_buffer = list(self._pre_roll_buffer)
-                    self._silence_start = None
-                    
-                    if self.on_speech_start_cb:
-                        threading.Thread(target=self.on_speech_start_cb, name="ListenerStartCB", daemon=True).start()
+            elif self._running and not self._recording:
+                if self.enable_vad_onset and not is_suppressed:
+                    if rms > onset_threshold:
+                        self._consecutive_speech_frames += 1
+                        if self._consecutive_speech_frames >= self.MIN_CONSECUTIVE_FRAMES:
+                            logger.info(f"VAD: Speech onset confirmed after {self._consecutive_speech_frames} frames (RMS: {rms:.4f} > Onset: {onset_threshold:.4f}, Ambient: {self._ambient_rms:.4f}).")
+                            self._recording = True
+                            self._recording_start_time = now
+                            self._manual_recording = False
+                            self._audio_buffer = list(self._pre_roll_buffer)
+                            self._silence_start = None
+                            self._speech_detected = True
+                            self._consecutive_speech_frames = 0
+                            
+                            if self.on_speech_start_cb:
+                                threading.Thread(target=self.on_speech_start_cb, name="ListenerStartCB", daemon=True).start()
+                    else:
+                        self._consecutive_speech_frames = 0
+                else:
+                    self._consecutive_speech_frames = 0
             
             # If actively recording
             elif self._recording:
+                if is_suppressed and not self._manual_recording:
+                    # Echo suppression: cancel VAD recording triggered by speaker output
+                    self._recording = False
+                    self._audio_buffer = []
+                    self._silence_start = None
+                    self._recording_start_time = None
+                    self._consecutive_speech_frames = 0
+                    return
+
                 self._audio_buffer.append(indata.copy())
-                now = time.time()
                 
                 # Check for max recording duration safety cap (e.g., 10 seconds)
                 if self._recording_start_time and (now - self._recording_start_time > self.max_duration):
                     logger.info(f"VAD: Max recording duration limit reached ({self.max_duration}s). Finalizing audio.")
                     self._recording = False
-                    captured_data = np.concatenate(self._audio_buffer, axis=0)
+                    captured_data = np.concatenate(self._audio_buffer, axis=0) if self._audio_buffer else np.zeros((1, 1), dtype=np.float32)
                     self._audio_buffer = []
                     self._silence_start = None
                     self._recording_start_time = None
+                    self._consecutive_speech_frames = 0
                     threading.Thread(target=self._save_and_dispatch, args=(captured_data,), name="ListenerSaveThread", daemon=True).start()
                     return
 
-                # Check for VAD silence timeout (only if not manually triggered)
-                if not self._manual_recording:
-                    if rms < speech_threshold:
-                        if self._silence_start is None:
-                            self._silence_start = now
-                        elif now - self._silence_start > self.silence_duration:
-                            logger.info(f"VAD: Silence duration limit reached ({self.silence_duration}s). Speech finalized.")
-                            self._recording = False
-                            
-                            captured_data = np.concatenate(self._audio_buffer, axis=0)
-                            self._audio_buffer = []
-                            self._silence_start = None
-                            self._recording_start_time = None
-                            
-                            threading.Thread(target=self._save_and_dispatch, args=(captured_data,), name="ListenerSaveThread", daemon=True).start()
-                    else:
-                        self._silence_start = None  # Speech continues, reset silence timer
+                # Check for VAD silence timeout using hold_threshold
+                elapsed = now - self._recording_start_time if self._recording_start_time else 0.0
+                if rms > hold_threshold:
+                    self._speech_detected = True
+                    self._silence_start = None
+                else:
+                    # Silence detected
+                    if self._silence_start is None:
+                        self._silence_start = now
+                    
+                    silence_limit = self.silence_duration if self._speech_detected else min(3.5, self.silence_duration * 1.5)
+                    if elapsed > 0.4 and (now - self._silence_start > silence_limit):
+                        logger.info(f"VAD: Silence duration limit reached ({now - self._silence_start:.2f}s, SpeechDetected={self._speech_detected}). Speech finalized.")
+                        self._recording = False
+                        self._manual_recording = False
+                        captured_data = np.concatenate(self._audio_buffer, axis=0) if self._audio_buffer else np.zeros((1, 1), dtype=np.float32)
+                        self._audio_buffer = []
+                        self._silence_start = None
+                        self._recording_start_time = None
+                        self._speech_detected = False
+                        self._consecutive_speech_frames = 0
+                        
+                        threading.Thread(target=self._save_and_dispatch, args=(captured_data,), name="ListenerSaveThread", daemon=True).start()
 
     def _save_and_dispatch(self, audio_data):
         """Encodes float32 samples to 16-bit WAV and triggers end-of-speech callback."""

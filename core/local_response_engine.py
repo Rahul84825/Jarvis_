@@ -27,6 +27,11 @@ class LocalResponseEngine:
             "wake_response": ["Yes?", "I'm listening.", "Go ahead."],
             "thank_you": ["You're welcome.", "Anytime.", "Happy to help."],
             "goodbye": ["Goodbye.", "See you later."],
+            "acknowledgement": ["Understood.", "Got it.", "Standing by."],
+            "affirmation": ["Standing by.", "Understood."],
+            "negation": ["Understood.", "Very well."],
+            "how_are_you": ["I'm doing well, sir. Ready when you are.", "All systems operating normally. How can I help?"],
+            "status_check": ["All systems are online and operational.", "Jarvis is running smoothly and ready for commands."],
             "help": ["I can open applications, manage your computer, control volume, open folders and websites, take screenshots, and execute multiple commands."],
             "identity": ["I'm {assistant_name}, your personal desktop assistant.", "I'm {assistant_name}, built as a personal AI assistant project for {owner_name}."],
             "open_app": ["Opening {app}.", "Sure, opening {app}."],
@@ -43,6 +48,11 @@ class LocalResponseEngine:
             "system_control": ["System setting updated."],
             "system_action": ["Executing system action."],
             "cancellation": ["Action canceled. Standby."],
+            "turn_on_camera": ["Camera activated and vision perception online, Sir."],
+            "turn_off_camera": ["Camera deactivated and hardware released, Sir."],
+            "start_hand_tracking": ["Hand tracking and gesture recognition active, Sir."],
+            "stop_hand_tracking": ["Hand tracking deactivated, Sir."],
+            "camera_snapshot": ["Photo captured, Sir."],
             "error_generic": ["I couldn't complete that."],
             "error_not_found": ["I couldn't find that application."],
             "error_unsupported": ["That action isn't supported on this system."],
@@ -81,14 +91,24 @@ class LocalResponseEngine:
         return tmpl.format(assistant_name=assistant_name, owner_name=owner_name)
 
     def get_help_response(self) -> str:
-        """Returns concise help documentation."""
-        return self.get_template("help")
+        """Returns dynamically generated capability documentation from registered tools."""
+        try:
+            from core.ai.tools.registry import tool_registry
+            return tool_registry.get_capability_summary()
+        except Exception:
+            return self.get_template("help")
 
     def format_intent_response(self, intent_node: dict, execution_result: dict = None) -> str:
         """Formats a local natural response for a given intent node and optional execution result."""
         intent = intent_node.get("intent", "unknown")
         action = intent_node.get("action", "")
         target = intent_node.get("target", "")
+
+        if intent in ["help", "show_help", "capabilities"]:
+            return self.get_help_response()
+
+        if intent in ["test_speech", "test_speakers"]:
+            return "Speaker audio output is operational."
 
         # Target formatting helpers
         target_lower = (target or "").lower()
@@ -119,6 +139,21 @@ class LocalResponseEngine:
         if intent == "goodbye":
             return self.get_template("goodbye")
 
+        if intent in ["acknowledgement", "okay"]:
+            return self.get_template("acknowledgement")
+
+        if intent in ["affirmation", "yes"]:
+            return self.get_template("affirmation")
+
+        if intent in ["negation", "no"]:
+            return self.get_template("negation")
+
+        if intent == "how_are_you":
+            return self.get_template("how_are_you")
+
+        if intent == "status_check":
+            return self.get_template("status_check")
+
         if intent == "help":
             return self.get_help_response()
 
@@ -132,6 +167,20 @@ class LocalResponseEngine:
         if intent == "close_app":
             app_name = clean_target or "Application"
             return self.get_template("close_app").format(app=app_name)
+
+        if intent == "minimize_app":
+            app_name = clean_target or "Window"
+            return self.get_template("minimize_app").format(app=app_name)
+
+        if intent == "maximize_app":
+            app_name = clean_target or "Window"
+            return self.get_template("maximize_app").format(app=app_name)
+
+        if intent in ["open_new_chrome_tab", "new_chrome_tab"]:
+            return self.get_template("open_new_chrome_tab")
+
+        if intent in ["open_new_chrome_window", "new_chrome_window"]:
+            return self.get_template("open_new_chrome_window")
 
         if intent == "open_website":
             site_name = clean_target or "Website"
@@ -158,6 +207,18 @@ class LocalResponseEngine:
 
         if action == "lock_pc":
             return self.get_template("lock_pc")
+
+        if action == "sleep_pc":
+            return self.get_template("sleep_pc")
+
+        if action == "restart_pc":
+            return self.get_template("restart_pc")
+
+        if action == "shutdown_pc":
+            return self.get_template("shutdown_pc")
+
+        if action == "hibernate_pc":
+            return self.get_template("hibernate_pc")
 
         if execution_result:
             if not execution_result.get("success", True):
@@ -194,3 +255,5 @@ class LocalResponseEngine:
         prefix = "Done." if all_success else "Completed with warnings."
         summary = ", and ".join(phrases) if len(phrases) <= 2 else ", ".join(phrases)
         return f"{prefix} {summary}"
+
+local_response_engine = LocalResponseEngine()

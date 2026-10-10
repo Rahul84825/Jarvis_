@@ -2,51 +2,97 @@
     "chrome": {
         "windows": "chrome",
         "linux": "google-chrome",
-        "aliases": ["chrome", "google chrome", "browser"]
+        "aliases": ["chrome", "google chrome", "browser", "chrome browser", "web browser"],
+        "website": "https://www.google.com/chrome"
     },
     "vscode": {
         "windows": "code",
         "linux": "code",
-        "aliases": ["vscode", "vs code", "visual studio code", "code"]
-    },
-    "steam": {
-        "windows": "steam",
-        "linux": "steam",
-        "aliases": ["steam"]
-    },
-    "firefox": {
-        "windows": "firefox",
-        "linux": "firefox",
-        "aliases": ["firefox", "mozilla firefox"]
-    },
-    "edge": {
-        "windows": "msedge",
-        "linux": "microsoft-edge",
-        "aliases": ["edge", "microsoft edge"]
-    },
-    "notepad": {
-        "windows": "notepad",
-        "linux": "gedit",
-        "aliases": ["notepad", "text editor"]
-    },
-    "calculator": {
-        "windows": "calc",
-        "linux": "gnome-calculator",
-        "aliases": ["calculator", "calc"]
+        "aliases": ["vscode", "vs code", "visual studio code", "code", "code editor"],
+        "website": "https://vscode.dev"
     },
     "spotify": {
         "windows": "spotify",
         "linux": "spotify",
-        "aliases": ["spotify"]
+        "aliases": ["spotify", "spotify app", "spotify music", "the spotify app"],
+        "website": "https://open.spotify.com"
     },
     "discord": {
         "windows": "discord",
         "linux": "discord",
-        "aliases": ["discord"]
+        "aliases": ["discord", "discord app", "the discord app"],
+        "website": "https://discord.com/app"
+    },
+    "steam": {
+        "windows": "steam",
+        "linux": "steam",
+        "aliases": ["steam", "steam app", "valve steam"],
+        "website": "https://store.steampowered.com"
+    },
+    "firefox": {
+        "windows": "firefox",
+        "linux": "firefox",
+        "aliases": ["firefox", "mozilla firefox", "mozilla"],
+        "website": "https://www.mozilla.org/firefox"
+    },
+    "edge": {
+        "windows": "msedge",
+        "linux": "microsoft-edge",
+        "aliases": ["edge", "microsoft edge", "ms edge"],
+        "website": "https://www.microsoft.com/edge"
+    },
+    "notepad": {
+        "windows": "notepad",
+        "linux": "gedit",
+        "aliases": ["notepad", "text editor", "note pad"],
+        "website": null
+    },
+    "calculator": {
+        "windows": "calc",
+        "linux": "gnome-calculator",
+        "aliases": ["calculator", "calc"],
+        "website": null
+    },
+    "antigravity": {
+        "windows": "Antigravity IDE.exe",
+        "linux": "antigravity",
+        "aliases": ["antigravity", "anti gravity", "anti-gravity", "antigravity editor", "antigravity ide", "antigravity.exe"],
+        "website": null
+    },
+    "terminal": {
+        "windows": "wt",
+        "linux": "gnome-terminal",
+        "aliases": ["terminal", "the terminal", "command line", "console", "windows terminal", "ubuntu terminal", "bash"],
+        "website": null
+    },
+    "powershell": {
+        "windows": "powershell",
+        "linux": "pwsh",
+        "aliases": ["powershell", "power shell", "windows powershell"],
+        "website": null
+    },
+    "cmd": {
+        "windows": "cmd",
+        "linux": "sh",
+        "aliases": ["cmd", "command prompt", "prompt"],
+        "website": null
+    },
+    "settings": {
+        "windows": "ms-settings:",
+        "linux": "gnome-control-center",
+        "aliases": ["settings", "system settings", "control panel", "preferences", "pc settings"],
+        "website": null
+    },
+    "taskmanager": {
+        "windows": "taskmgr",
+        "linux": "gnome-system-monitor",
+        "aliases": ["task manager", "taskmgr", "system monitor", "process manager", "activity monitor"],
+        "website": null
     },
     "explorer": {
         "windows": "explorer",
         "linux": "nautilus",
-        "aliases": ["explorer", "file explorer", "files"]
+        "aliases": ["explorer", "file explorer", "files", "file manager", "my computer", "this pc"],
+        "website": null
     }
 }

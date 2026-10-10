@@ -40,7 +40,7 @@ class TestJarvisRuntime(unittest.TestCase):
             "pending_confirmation": False
         }
 
-        self.runtime.process_command("Lock computer")
+        self.runtime._process_command_worker("Lock computer")
         mock_exec.assert_called()
 
     def test_duplex_speaker_lockout(self):

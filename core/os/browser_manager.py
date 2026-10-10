@@ -221,3 +221,27 @@ class BrowserManager:
                 return {"success": False, "message": f"Website '{site_key_or_url}' is not configured."}
 
         return self.open_url(url)
+
+    def open_new_chrome_tab(self, url: str = None) -> Dict[str, Any]:
+        """Opens a new tab in the running Chrome session, preserving existing tabs."""
+        try:
+            logger.info(f"[BROWSER] Requesting new Chrome tab (URL: {url}).")
+            success = platform_manager.platform.open_new_browser_tab("chrome", url=url)
+            if success:
+                return {"success": True, "message": "Opening a new tab."}
+            return {"success": False, "message": "I couldn't open a new tab."}
+        except Exception as e:
+            logger.error(f"[BROWSER_ERROR] Failed to open new Chrome tab: {e}")
+            return {"success": False, "message": "I couldn't open a new tab."}
+
+    def open_new_chrome_window(self, url: str = None) -> Dict[str, Any]:
+        """Opens a brand new independent Chrome window, preserving existing windows and tabs."""
+        try:
+            logger.info(f"[BROWSER] Requesting new Chrome window (URL: {url}).")
+            success = platform_manager.platform.open_new_browser_window("chrome", url=url)
+            if success:
+                return {"success": True, "message": "Opening another Chrome window."}
+            return {"success": False, "message": "I couldn't open another Chrome window."}
+        except Exception as e:
+            logger.error(f"[BROWSER_ERROR] Failed to open new Chrome window: {e}")
+            return {"success": False, "message": "I couldn't open another Chrome window."}

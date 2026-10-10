@@ -64,6 +64,12 @@ class PlatformManager:
     def focus_application(self, app_key: str) -> bool:
         return self._platform.focus_application(app_key)
 
+    def minimize_application(self, app_key: str = None) -> bool:
+        return self._platform.minimize_application(app_key)
+
+    def maximize_application(self, app_key: str = None) -> bool:
+        return self._platform.maximize_application(app_key)
+
     def get_folder_path(self, folder_name: str) -> Path:
         return self._platform.get_folder_path(folder_name)
 

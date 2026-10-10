@@ -72,6 +72,9 @@ def restart_pc() -> Tuple[bool, str]:
 def shutdown_pc() -> Tuple[bool, str]:
     return platform_manager.shutdown_pc()
 
+def hibernate_pc() -> Tuple[bool, str]:
+    return platform_manager.hibernate_pc()
+
 def get_battery_status() -> Tuple[bool, str]:
     return platform_manager.get_battery_status()
 

@@ -11,15 +11,20 @@ class RiskLevel:
 INTENT_RISK_MAPPING = {
     "open_app": RiskLevel.LOW,
     "close_app": RiskLevel.MEDIUM,
+    "minimize_app": RiskLevel.LOW,
+    "maximize_app": RiskLevel.LOW,
+    "open_new_chrome_tab": RiskLevel.LOW,
+    "open_new_chrome_window": RiskLevel.LOW,
     "window_control": RiskLevel.MEDIUM,
     "file_access": RiskLevel.MEDIUM,
     "screenshot": RiskLevel.MEDIUM,
     "status_request": RiskLevel.MEDIUM,
     "volume_control": RiskLevel.MEDIUM,
-    "lock_pc": RiskLevel.MEDIUM, # Primary goal asks for 'lock my computer' to work smoothly
+    "lock_pc": RiskLevel.MEDIUM,
     "sleep_pc": RiskLevel.HIGH,
     "restart_pc": RiskLevel.HIGH,
-    "shutdown_pc": RiskLevel.HIGH
+    "shutdown_pc": RiskLevel.HIGH,
+    "hibernate_pc": RiskLevel.HIGH
 }
 
 def get_action_risk_level(intent: str, action: str = None) -> str:
@@ -30,6 +35,8 @@ def get_action_risk_level(intent: str, action: str = None) -> str:
         elif action in ["restart", "restart_pc"]:
             return RiskLevel.HIGH
         elif action in ["sleep", "sleep_pc"]:
+            return RiskLevel.HIGH
+        elif action in ["hibernate", "hibernate_pc"]:
             return RiskLevel.HIGH
         elif action in ["lock", "lock_pc"]:
             return RiskLevel.MEDIUM

@@ -20,20 +20,20 @@ class CommandNormalizer:
             r"\b(dervis|derbis|darwis|carves|charles|gerald|travis|garbage|device|assistant|jal|jals|goli)\b"
         ]
 
-        # Polite phrases to remove
+        # Polite phrases to remove (longer/more specific phrases first)
         self.polite_phrases = [
-            r"\bcould you please\b",
+            r"\bbe so kind as to\b",
+            r"\bi would like you to\b",
             r"\bwould you please\b",
+            r"\bcould you please\b",
             r"\bcan you please\b",
-            r"\bplease\b",
+            r"\bwould you mind\b",
+            r"\bi want you to\b",
             r"\bcould you\b",
             r"\bwould you\b",
             r"\bcan you\b",
-            r"\bkindly\b",
-            r"\bi want you to\b",
-            r"\bi would like you to\b",
-            r"\bwould you mind\b",
-            r"\bbe so kind as to\b"
+            r"\bplease\b",
+            r"\bkindly\b"
         ]
 
         # Conversational filler words
@@ -46,11 +46,13 @@ class CommandNormalizer:
         # Synonym and phrase replacements (order matters: longer/more specific phrases first)
         self.phrase_mappings = [
             # System power & lock actions
+            (r"\bput\s+(my|the)?\s*(pc|computer|laptop)\s+on\s+lock\b", "lock computer"),
+            (r"\b(make|send)\s+(my|the)?\s*(pc|computer|laptop)\s+(to\s+)?sleep\b", "sleep computer"),
             (r"\b(lock)\s+(my|the)?\s*(pc|computer|screen|system|workstation)\b", "lock computer"),
             (r"\b(sleep)\s+(my|the)?\s*(pc|computer|system)\b", "sleep computer"),
-            (r"\bput\s+(my|the)?\s*(pc|computer)\s+to\s+sleep\b", "sleep computer"),
+            (r"\bput\s+(my|the)?\s*(pc|computer|laptop)\s+to\s+sleep\b", "sleep computer"),
             (r"\b(reboot|restart)\s+(my|the)?\s*(pc|computer|system)\b", "restart computer"),
-            (r"\b(turn off|power off|shutdown)\s+(my|the)?\s*(pc|computer)\b", "shutdown computer"),
+            (r"\b(turn off|power off|shutdown)\s+(my|the)?\s*(pc|computer|laptop)\b", "shutdown computer"),
 
             # Screenshots
             (r"\b(take a picture of my screen|take picture of my screen|take a picture of screen|take picture of screen|take screen shot|take a screenshot|capture screen|screen capture|snapshot)\b", "take screenshot"),
@@ -62,7 +64,7 @@ class CommandNormalizer:
             (r"\b(unmute volume|unmute audio|unmute sound)\b", "unmute"),
 
             # App launches
-            (r"\b(bring up|launch|run|start|open up)\b", "open"),
+            (r"\b(bring up|launch|run|start|open up|opening)\b", "open"),
 
             # App name aliases & fuzzy command shortcuts
             (r"\b(visual studio code|vs code|vieskund|vees code|viscode|vies kund|code)\b", "vscode"),
@@ -78,6 +80,9 @@ class CommandNormalizer:
             (r"\bfile explorer|windows explorer|my computer|this pc\b", "explorer"),
             (r"\bdownloads folder|download folder\b", "downloads"),
             (r"\bwhatsapp web\b", "whatsapp"),
+
+            # Capabilities & Help
+            (r"\b(what\s+can\s+(?:you|jarvis)\s+do|what\s+can\s+do|what\s+do\s+you\s+do|what\s+are\s+your\s+capabilities|show\s+capabilities|show\s+me\s+your\s+capabilities|what\s+commands\s+do\s+you\s+know|how\s+can\s+you\s+help\s+me)\b", "what can you do"),
 
             # Common phonetic fixes
             (r"\b(test my microphone|test microphone|check my microphone|check microphone|microphone test)\b", "test microphone"),
@@ -139,19 +144,27 @@ class CommandNormalizer:
                 removed.extend([m if isinstance(m, str) else m[0] for m in matches])
             normalized = re.sub(pattern, " ", normalized, flags=re.IGNORECASE)
 
-        # 3. Strip polite phrases
-        for pattern in self.polite_phrases:
-            if re.search(pattern, normalized, re.IGNORECASE):
-                removed.append(pattern.replace(r"\b", "").strip())
-                normalized = re.sub(pattern, " ", normalized, flags=re.IGNORECASE)
-
-        # 4. Strip filler words (only if string contains other words)
+        # 3. Strip polite phrases (only if string contains other actionable words and is not a capability query)
+        is_capability_query = bool(re.search(r"\b(what\s+can\s+(?:you|jarvis)?\s*do|what\s+are\s+your\s+capabilities|what\s+commands\s+do\s+you\s+know|how\s+can\s+you\s+help|what\s+can\s+do)\b", normalized, re.IGNORECASE))
         words_check = normalized.split()
-        if len(words_check) > 1:
+        if len(words_check) > 1 and not is_capability_query:
+            for pattern in self.polite_phrases:
+                if re.search(pattern, normalized, re.IGNORECASE):
+                    # Only strip if remaining string is not empty
+                    test_sub = re.sub(pattern, " ", normalized, flags=re.IGNORECASE).strip()
+                    if test_sub:
+                        removed.append(pattern.replace(r"\b", "").strip())
+                        normalized = test_sub
+
+        # 4. Strip filler words (only if string contains other words and is not a capability query)
+        words_check = normalized.split()
+        if len(words_check) > 1 and not is_capability_query:
             for pattern in self.filler_words:
                 if re.search(pattern, normalized, re.IGNORECASE):
-                    removed.append(pattern.replace(r"\b", "").strip())
-                    normalized = re.sub(pattern, " ", normalized, flags=re.IGNORECASE)
+                    test_sub = re.sub(pattern, " ", normalized, flags=re.IGNORECASE).strip()
+                    if test_sub:
+                        removed.append(pattern.replace(r"\b", "").strip())
+                        normalized = test_sub
 
         # 5. Apply phrase mappings and synonym replacements
         for pattern, replacement in self.phrase_mappings:
@@ -170,12 +183,16 @@ class CommandNormalizer:
         if len(clean_words) == 1 and clean_words[0] in single_token_shortcuts:
             normalized = single_token_shortcuts[clean_words[0]]
 
-        # 7. Deduplicate repeated consecutive words (e.g. "open open chrome" -> "open chrome")
+        # 7. Deduplicate repeated consecutive words and strip isolated punctuation
         words = normalized.split()
         dedup_words = []
         for word in words:
-            if not dedup_words or dedup_words[-1] != word:
-                dedup_words.append(word)
+            # Strip trailing period if not a website (e.g. google.com) or decimal number
+            cleaned_word = word
+            if not re.match(r'^\d+\.\d+$', cleaned_word) and not re.search(r'\.[a-z]{2,}', cleaned_word):
+                cleaned_word = cleaned_word.strip('.!?,:;')
+            if cleaned_word and (not dedup_words or dedup_words[-1] != cleaned_word):
+                dedup_words.append(cleaned_word)
 
         final_normalized = " ".join(dedup_words).strip()
         
@@ -189,5 +206,7 @@ class CommandNormalizer:
         return {
             "normalized": final_normalized,
             "raw": original_text,
-            "removed_words": [r for r in removed if r]
+            "removed_words": [r for r in removed if r],
+            "confidence": 1.0,
+            "meaningful": bool(final_normalized)
         }

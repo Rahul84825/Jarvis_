@@ -37,6 +37,14 @@
   "close_app": [
     "Closing {app}."
   ],
+  "minimize_app": [
+    "Minimizing {app}.",
+    "Window minimized."
+  ],
+  "maximize_app": [
+    "Maximizing {app}.",
+    "Window maximized."
+  ],
   "screenshot": [
     "Taking a screenshot.",
     "Screenshot saved."
@@ -55,6 +63,24 @@
   ],
   "lock_pc": [
     "Locking the computer."
+  ],
+  "sleep_pc": [
+    "Putting the computer to sleep."
+  ],
+  "restart_pc": [
+    "Restarting the computer."
+  ],
+  "shutdown_pc": [
+    "Shutting down the computer."
+  ],
+  "hibernate_pc": [
+    "Hibernating the computer."
+  ],
+  "open_new_chrome_tab": [
+    "Opening a new tab."
+  ],
+  "open_new_chrome_window": [
+    "Opening another Chrome window."
   ],
   "open_website": [
     "Opening {site}.",

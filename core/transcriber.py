@@ -25,6 +25,7 @@ class SpeechTranscriber:
     def _load_model(self):
         """Loads the Whisper model into memory if not already loaded."""
         if self._model is not None:
+            logger.debug("[WHISPER_MODEL_REUSED] Reusing persistent Faster Whisper model instance.")
             return
 
         logger.info(f"Loading Faster Whisper model '{self.model_size}' on device '{self.device}'...")
@@ -40,7 +41,7 @@ class SpeechTranscriber:
                 device=self.device,
                 compute_type=compute_type
             )
-            logger.info(f"Faster Whisper model loaded successfully in {time.time() - t0:.2f}s.")
+            logger.info(f"[WHISPER_MODEL_INITIALIZED] Faster Whisper model loaded successfully in {time.time() - t0:.2f}s.")
         except Exception as e:
             logger.error(f"Failed to load Faster Whisper model: {e}", exc_info=True)
             raise e
@@ -54,6 +55,8 @@ class SpeechTranscriber:
             The transcribed text string.
         """
         import math
+        from core.transcript_validator import transcript_validator
+
         self.last_metadata = {
             "text": "",
             "confidence": 0.0,
@@ -89,6 +92,12 @@ class SpeechTranscriber:
             # Log raw Whisper output for every command
             logger.info(f"[RAW WHISPER OUTPUT]: '{raw_transcription}'")
             
+            # Early empty transcript check
+            if not raw_transcription:
+                duration = time.time() - t0
+                logger.info(f"[EMPTY_TRANSCRIPT] Silence or inaudible audio received ({duration:.2f}s).")
+                return ""
+
             # Post-process transcription to correct accent and phonetic errors
             import re
             transcription = raw_transcription
@@ -125,17 +134,27 @@ class SpeechTranscriber:
             for pattern, repl in replacements.items():
                 transcription = re.sub(pattern, repl, transcription, flags=re.IGNORECASE)
             
-            duration = time.time() - t0
-            logger.info(f"Transcription complete in {duration:.2f}s. Result: '{transcription}'")
-            logger.info(f"Audio info: Language='{info.language}' (Prob={info.language_probability:.2f}), Duration={info.duration:.2f}s")
-            
             # Calculate confidence score from segment average logprobs
             if segment_list:
                 avg_logprob = sum(seg.avg_logprob for seg in segment_list) / len(segment_list)
                 confidence = math.exp(avg_logprob)
             else:
                 confidence = 0.0
-                
+
+            # Transcript Quality Control & Hallucination Filter
+            val_res = transcript_validator.validate(transcription, confidence=confidence, audio_duration=info.duration)
+            if not val_res.is_valid or val_res.status in ["EMPTY", "TOO_SHORT"]:
+                logger.info(f"[TRANSCRIPT_FILTERED] Discarding invalid transcript: status={val_res.status}")
+                return ""
+
+            if val_res.repetition_detected:
+                logger.info(f"[TRANSCRIPT_VALIDATED] Repetitions compressed ({val_res.original_repetition_count}x -> '{val_res.cleaned_text}')")
+                transcription = val_res.cleaned_text
+
+            duration = time.time() - t0
+            logger.info(f"Transcription complete in {duration:.2f}s. Result: '{transcription}'")
+            logger.info(f"Audio info: Language='{info.language}' (Prob={info.language_probability:.2f}), Duration={info.duration:.2f}s")
+            
             self.last_metadata = {
                 "text": transcription,
                 "confidence": confidence,
