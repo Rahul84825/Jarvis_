@@ -3,7 +3,8 @@ import logging
 from enum import Enum
 
 from core.local_response_engine import LocalResponseEngine
-from core.speech_sanitizer import sanitize_speech_text, enforce_conversational_brevity
+from core.speech_sanitizer import speech_sanitizer, sanitize_speech_text, enforce_conversational_brevity
+from core.response_registry import response_registry, CommandOutcome
 
 logger = logging.getLogger("Jarvis.ResponseManager")
 
@@ -68,24 +69,29 @@ class ResponseManager:
             spoken_text = response.spoken_text
             metadata = response.metadata
 
-        logger.info(f"Response Manager [{resp_type}]: '{text}' (Spoken: '{spoken_text}')")
-
+        # Sanitize speech for audible natural pronunciation
         if spoken_text:
-            spoken_text = sanitize_speech_text(spoken_text)
+            spoken_text = speech_sanitizer.sanitize(spoken_text)
             spoken_text = enforce_conversational_brevity(spoken_text, max_sentences=2)
             self.last_spoken_response = spoken_text
 
+        tts_success = True
         if speak and self.speaker and spoken_text:
             try:
                 self.speaker.speak(spoken_text)
             except Exception as e:
+                tts_success = False
                 logger.error(f"Response Manager failed to output speech: {e}")
+
+        logger.info(f"Response Manager [{resp_type}]: '{text}' (Spoken: '{spoken_text}', TTS_Success={tts_success})")
+        metadata["tts_success"] = tts_success
 
         return {
             "type": resp_type,
             "text": text,
             "spoken_text": spoken_text,
             "spoken": speak and self.speaker is not None,
+            "tts_success": tts_success,
             "metadata": metadata
         }
 
@@ -156,4 +162,34 @@ class ResponseManager:
 
     def cancellation(self, text: str = "Action canceled. Standby.", speak: bool = True) -> dict:
         resp = StructuredResponse(ResponseType.CANCELLATION, text)
+        return self.handle_response(resp, speak=speak)
+
+    def acknowledge_command(self, text: str, speak: bool = True) -> dict:
+        """Emits brief acknowledgment before executing a longer command."""
+        resp = StructuredResponse(ResponseType.ACKNOWLEDGEMENT, text)
+        return self.handle_response(resp, speak=speak)
+
+    def missing_argument(self, question: str, speak: bool = True) -> dict:
+        """Asks a concise clarification question when required command argument is missing."""
+        resp = StructuredResponse(ResponseType.QUESTION, question, metadata={"outcome": CommandOutcome.MISSING_ARGUMENT.value})
+        return self.handle_response(resp, speak=speak)
+
+    def unsupported_capability(self, text: str = "That capability isn't available yet, Sir.", speak: bool = True) -> dict:
+        """Responds when an unsupported feature or uninstalled application is requested."""
+        resp = StructuredResponse(ResponseType.FAILURE, text, metadata={"outcome": CommandOutcome.UNSUPPORTED_CAPABILITY.value})
+        return self.handle_response(resp, speak=speak)
+
+    def invalid_command(self, text: str = "I couldn't complete that request, Sir. Try another command.", speak: bool = True) -> dict:
+        """Responds with concise default fallback for invalid commands."""
+        resp = StructuredResponse(ResponseType.FAILURE, text, metadata={"outcome": CommandOutcome.INVALID_COMMAND.value})
+        return self.handle_response(resp, speak=speak)
+
+    def permission_denied(self, text: str = "I don't have permission to do that, Sir.", speak: bool = True) -> dict:
+        """Responds when an action is blocked by safety gate or denied permissions."""
+        resp = StructuredResponse(ResponseType.WARNING, text, metadata={"outcome": CommandOutcome.PERMISSION_DENIED.value})
+        return self.handle_response(resp, speak=speak)
+
+    def timeout(self, text: str = "That action timed out, Sir. Please try again.", speak: bool = True) -> dict:
+        """Responds when a tool or API operation times out."""
+        resp = StructuredResponse(ResponseType.FAILURE, text, metadata={"outcome": CommandOutcome.TIMEOUT.value})
         return self.handle_response(resp, speak=speak)

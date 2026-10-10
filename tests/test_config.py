@@ -49,20 +49,20 @@ class TestConfig(unittest.TestCase):
         os.environ["JARVIS_LOG_LEVEL"] = "ERROR"
         os.environ["JARVIS_UI_WIDTH"] = "1500"
         os.environ["JARVIS_WAKE_WORDS"] = '["test_wake", "hey_test"]'
-        os.environ["JARVIS_CLAP_THRESHOLD"] = "0.45"
+        os.environ["JARVIS_PERSISTENT_MEMORY"] = "false"
         
         try:
             cfg = Config(config_path=str(self.temp_path))
             self.assertEqual(cfg.log_level, "ERROR")
             self.assertEqual(cfg.ui_width, 1500)
             self.assertEqual(cfg.wake_words, ["test_wake", "hey_test"])
-            self.assertEqual(cfg.clap_threshold, 0.45)
+            self.assertEqual(cfg.persistent_memory_enabled, False)
         finally:
             # Clean up env variables
             del os.environ["JARVIS_LOG_LEVEL"]
             del os.environ["JARVIS_UI_WIDTH"]
             del os.environ["JARVIS_WAKE_WORDS"]
-            del os.environ["JARVIS_CLAP_THRESHOLD"]
+            del os.environ["JARVIS_PERSISTENT_MEMORY"]
 
 if __name__ == "__main__":
     unittest.main()

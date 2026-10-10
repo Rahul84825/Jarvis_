@@ -7,7 +7,7 @@ import subprocess
 import webbrowser
 import psutil
 from pathlib import Path
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Optional
 
 from core.platform.base_platform import BasePlatform
 
@@ -43,6 +43,80 @@ class WindowsPlatform(BasePlatform):
                 return app_key
         return name
 
+    def _probe_windows_app_path(self, app_name: str) -> Optional[str]:
+        """Probes Windows Registry App Paths for registered applications."""
+        try:
+            import winreg
+            candidates = [app_name]
+            if not app_name.endswith(".exe"):
+                candidates.append(f"{app_name}.exe")
+
+            for name in candidates:
+                for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                    for sub in (
+                        fr"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{name}",
+                        fr"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\{name}"
+                    ):
+                        try:
+                            with winreg.OpenKey(root, sub) as key:
+                                val, _ = winreg.QueryValueEx(key, "")
+                                if val:
+                                    clean_p = val.strip('\"')
+                                    if Path(clean_p).exists():
+                                        return clean_p
+                        except OSError:
+                            pass
+        except Exception as e:
+            logger.debug(f"Failed to query registry App Paths for '{app_name}': {e}")
+        return None
+
+    def _probe_application_executable(self, app_key: str) -> Optional[str]:
+        """Resolves installed absolute executable path using multiple Windows discovery methods."""
+        key = self.resolve_app_key(app_key)
+
+        # 1. Probing browsers via built-in browser discovery
+        if key in ["chrome", "edge", "firefox", "chromium", "browser"]:
+            b_target = "chrome" if key == "browser" else key
+            probed_b = self._probe_browser_executable(b_target)
+            if probed_b:
+                return probed_b
+
+        # 2. Check Windows Registry App Paths (e.g. chrome.exe, msedge.exe)
+        reg_path = self._probe_windows_app_path(key)
+        if reg_path:
+            return reg_path
+
+        # 3. Check system PATH via shutil.which
+        which_path = shutil.which(key) or shutil.which(f"{key}.exe")
+        if which_path:
+            return which_path
+
+        # 4. Probing known application paths on Windows
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        pf = os.environ.get("ProgramFiles", "C:\\Program Files")
+        pfx86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+        app_data = os.environ.get("APPDATA", "")
+
+        known_paths = {
+            "vscode": [
+                Path(local_app) / "Programs" / "Microsoft VS Code" / "Code.exe",
+                Path(pf) / "Microsoft VS Code" / "Code.exe",
+                Path(pfx86) / "Microsoft VS Code" / "Code.exe"
+            ],
+            "spotify": [
+                Path(app_data) / "Spotify" / "Spotify.exe",
+                Path(local_app) / "Microsoft" / "WindowsApps" / "spotify.exe"
+            ],
+            "discord": [
+                Path(local_app) / "Discord" / "Update.exe"
+            ]
+        }
+        for p in known_paths.get(key, []):
+            if p.exists():
+                return str(p)
+
+        return None
+
     def resolve_executable(self, app_key: str) -> str:
         if not hasattr(self, "_exec_cache"):
             self._exec_cache = {}
@@ -55,9 +129,18 @@ class WindowsPlatform(BasePlatform):
 
     def _resolve_executable_uncached(self, app_key: str) -> str:
         key = self.resolve_app_key(app_key)
+
+        # Check probed absolute executable first
+        probed = self._probe_application_executable(key)
+        if probed:
+            return probed
+
         reg_entry = self.app_registry.get(key, {})
         win_exec = reg_entry.get("windows")
         if win_exec:
+            probed_win = self._probe_application_executable(win_exec)
+            if probed_win:
+                return probed_win
             if not win_exec.endswith(".exe") and win_exec not in ["calc", "notepad", "explorer"]:
                 win_exec += ".exe"
             exe_candidate = win_exec
@@ -163,45 +246,35 @@ class WindowsPlatform(BasePlatform):
                 return True
 
         exec_path = self.resolve_executable(key)
-        logger.info(f"[Windows] Launching application '{key}' via: {exec_path}")
+        try:
+            # Attempt 1: Absolute path execution
+            if os.path.isabs(exec_path) and os.path.exists(exec_path):
+                subprocess.Popen([exec_path])
+                return True
 
-        # Attempt 1: Absolute path execution
-        if os.path.isabs(exec_path):
-            if os.path.exists(exec_path):
-                try:
-                    subprocess.Popen([exec_path])
+            # Attempt 2: Command found in system PATH or Windows built-ins
+            which_p = shutil.which(exec_path) or shutil.which(f"{exec_path}.exe")
+            if which_p and os.path.exists(which_p):
+                subprocess.Popen([which_p])
+                return True
+
+            if key in ["chrome", "edge", "firefox", "chromium", "browser"]:
+                if self.open_browser(key):
                     return True
-                except Exception as e:
-                    logger.warning(f"[Windows] Subprocess absolute launch failed for '{exec_path}': {e}")
-            else:
-                logger.warning(f"[Windows] Resolved path does not exist on disk: '{exec_path}'")
-                return False
 
-        # Attempt 2: Command found in system PATH or Windows built-ins (e.g. notepad, calc, explorer, wt, cmd)
-        is_builtin = key in ["calc", "calculator", "notepad", "explorer", "cmd", "powershell", "settings"] or exec_path.startswith("ms-")
-        which_path = shutil.which(exec_path)
-
-        if which_path:
-            try:
-                subprocess.Popen([which_path])
-                return True
-            except Exception as e:
-                logger.debug(f"[Windows] Failed to launch via which path: {e}")
-
-        if is_builtin:
-            try:
-                os.startfile(exec_path)
-                return True
-            except Exception as e:
-                logger.debug(f"[Windows] os.startfile failed for '{exec_path}': {e}")
+            is_builtin = key in ["calc", "calculator", "notepad", "explorer", "cmd", "powershell", "settings"] or exec_path.startswith("ms-")
+            if is_builtin:
                 try:
-                    subprocess.Popen(f'start "" "{exec_path}"', shell=True)
+                    os.startfile(exec_path)
                     return True
                 except Exception:
                     pass
 
-        logger.warning(f"[Windows] Could not locate executable for '{key}'.")
-        return False
+            subprocess.Popen(f'start "" "{exec_path}"', shell=True)
+            return True
+        except Exception as e:
+            logger.error(f"[Windows] Failed to launch application '{key}': {e}", exc_info=True)
+            return False
 
     def close_application(self, app_key: str) -> bool:
         key = self.resolve_app_key(app_key)
@@ -209,10 +282,11 @@ class WindowsPlatform(BasePlatform):
             logger.warning("[Windows] Attempted to close File Explorer. Blocked for safety.")
             return False
 
-        exec_name = Path(self.resolve_executable(key)).name.lower()
-        target_names = [exec_name, f"{key}.exe", key]
-        if not exec_name.endswith(".exe"):
-            target_names.append(f"{exec_name}.exe")
+        exec_name = self.resolve_executable(key).lower()
+        base_name = Path(exec_name).name.lower()
+        target_names = [exec_name, base_name, f"{key}.exe", key]
+        if not base_name.endswith(".exe"):
+            target_names.append(f"{base_name}.exe")
         if key == "chrome":
             target_names.extend(["chrome.exe", "google chrome.exe"])
         elif key == "calculator":
@@ -246,10 +320,11 @@ class WindowsPlatform(BasePlatform):
         if key == "explorer":
             return True
 
-        exec_name = Path(self.resolve_executable(key)).name.lower()
-        target_names = [exec_name, f"{key}.exe", key]
-        if not exec_name.endswith(".exe"):
-            target_names.append(f"{exec_name}.exe")
+        exec_name = self.resolve_executable(key).lower()
+        base_name = Path(exec_name).name.lower()
+        target_names = [exec_name, base_name, f"{key}.exe", key]
+        if not base_name.endswith(".exe"):
+            target_names.append(f"{base_name}.exe")
         if key == "chrome":
             target_names.extend(["chrome.exe", "google chrome.exe"])
         elif key == "calculator":
@@ -267,6 +342,24 @@ class WindowsPlatform(BasePlatform):
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
         return False
+
+    def _force_foreground_window(self, hwnd: int) -> bool:
+        """Forces window to foreground bypassing Windows LockSetForegroundWindow."""
+        try:
+            user32 = ctypes.windll.user32
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            else:
+                user32.ShowWindow(hwnd, 5)  # SW_SHOW
+
+            user32.keybd_event(0x12, 0, 0, 0)  # ALT down
+            user32.keybd_event(0x12, 0, 2, 0)  # ALT up
+            user32.SetForegroundWindow(hwnd)
+            user32.BringWindowToTop(hwnd)
+            return True
+        except Exception as e:
+            logger.debug(f"[Windows] Force foreground failed for hwnd {hwnd}: {e}")
+            return False
 
     def focus_application(self, app_key: str) -> bool:
         key = self.resolve_app_key(app_key)
@@ -289,9 +382,13 @@ class WindowsPlatform(BasePlatform):
             windows = gw.getWindowsWithTitle("")
             for win in windows:
                 if win.title and keyword.lower() in win.title.lower():
-                    if win.isMinimized:
-                        win.restore()
-                    win.activate()
+                    try:
+                        if win.isMinimized:
+                            win.restore()
+                        win.activate()
+                    except Exception:
+                        if hasattr(win, "_hWnd"):
+                            self._force_foreground_window(win._hWnd)
                     logger.info(f"[Windows] Focused window: '{win.title}'")
                     return True
         except Exception as e:

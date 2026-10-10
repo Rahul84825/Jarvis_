@@ -6,6 +6,9 @@ from core.command_normalizer import CommandNormalizer
 from core.platform.platform_manager import platform_manager
 from core.os.application_resolver import application_resolver, TargetType
 from modules.browser.web_control import web_control
+from core.apps.application_discovery import app_discovery
+from core.custom_commands.command_manager import command_manager
+from core.custom_commands.command_registry import custom_command_registry
 
 logger = logging.getLogger("Jarvis.IntentEngine")
 
@@ -58,10 +61,54 @@ class IntentEngine:
             if clean == alias or clean.endswith(" " + alias) or clean.startswith(alias + " "):
                 return app_key
 
+        best_app, _ = app_discovery.find_application(clean)
+        if best_app:
+            return best_app.app_id
+
         return clean
+
+    def _resolve_search_provider_and_query(self, query: str) -> tuple[str, str, str]:
+        """Resolves target provider, clean target, and exact query from extracted search query string."""
+        q_strip = query.strip()
+
+        # 1. Targeted site postfix: "search for Python tutorials on YouTube"
+        on_match = re.match(r"^(?:for\s+)?(.+?)\s+on\s+(youtube|github|reddit|stackoverflow|stack overflow|google)$", q_strip, re.IGNORECASE)
+        if on_match:
+            prov = on_match.group(2).lower()
+            if prov == "stack overflow":
+                prov = "stackoverflow"
+            extracted = on_match.group(1).strip()
+            return prov, extracted.lower(), extracted
+
+        # 2. Local project code search: "search my project for ...", "search this project for ..."
+        proj_match = re.match(r"^(?:in\s+|for\s+)?(?:my\s+|this\s+)?project\s+for\s+(.+)$", q_strip, re.IGNORECASE)
+        if proj_match:
+            extracted = proj_match.group(1).strip()
+            return "project", extracted, extracted
+
+        # 3. Provider prefixes: "YouTube for ...", "for YouTube ...", "GitHub for ...", etc.
+        prov_patterns = [
+            (r"^(?:for\s+)?(?:google|chrome|the web)\s+for\s+(.+)$", "google"),
+            (r"^(?:for\s+)?(?:youtube)\s+for\s+(.+)$", "youtube"),
+            (r"^(?:for\s+)?(?:github)\s+for\s+(.+)$", "github"),
+            (r"^(?:for\s+)?(?:reddit)\s+for\s+(.+)$", "reddit"),
+            (r"^(?:for\s+)?(?:stackoverflow|stack overflow)\s+for\s+(.+)$", "stackoverflow"),
+        ]
+        for pat, prov in prov_patterns:
+            m = re.match(pat, q_strip, re.IGNORECASE | re.DOTALL)
+            if m:
+                extracted = m.group(1).strip()
+                return prov, extracted.lower(), extracted
+
+        # 4. Clean leading "for " or "about " from general queries while preserving original casing
+        clean_q = re.sub(r"^(?:for|about)\s+", "", q_strip, flags=re.IGNORECASE).strip()
+        return "google", clean_q, clean_q
 
     def _is_informational_query(self, raw_text: str, clean_text: str) -> bool:
         """Strictly identifies questions and informational queries that must NOT trigger actions."""
+        if re.search(r"^explain\s+(?:this\s+)?(?:python\s+)?error\b", clean_text, re.IGNORECASE) or re.search(r"^explain\s+what\s+tools\b", clean_text, re.IGNORECASE):
+            return False
+
         # Informational question starters (strictly information seeking, not polite requests)
         info_starters = [
             r"^how\s+(?:do\s+i|to|can\s+i|would\s+i|should\s+i)\b",
@@ -85,7 +132,7 @@ class IntentEngine:
 
         return False
 
-    def parse(self, text: str) -> dict:
+    def parse(self, text: str, raw_text: str = None) -> dict:
         """Analyzes speech transcript or text and extracts structured intent with confidence scoring."""
         if not text or not isinstance(text, str) or not text.strip():
             return {
@@ -98,11 +145,66 @@ class IntentEngine:
                 "fallback_message": "I didn't catch that. Please speak again."
             }
 
-        raw_text = text.strip()
+        effective_raw = raw_text or text
+        raw_text = effective_raw.strip() if effective_raw else ""
         norm_res = self.normalizer.normalize(text)
         clean = norm_res["normalized"].lower().strip()
 
-        logger.info(f"Intent Engine analyzing command: '{clean}' (Raw: '{raw_text}')")
+        # -------------------------------------------------------------
+        # 0. EXPLICIT SEARCH INTENT (HIGHEST PRIORITY)
+        # -------------------------------------------------------------
+        # Must be evaluated BEFORE question classification, local fallback, or other commands.
+        is_search, extracted_query = self.normalizer.extract_explicit_search(effective_raw)
+        if not is_search and clean:
+            is_search, extracted_query = self.normalizer.extract_explicit_search(clean)
+
+        if is_search:
+            clean_query = extracted_query.strip()
+            logger.info("[SEARCH] Explicit search prefix detected")
+            logger.info(f"[SEARCH] Original input: '{effective_raw}'")
+            logger.info(f"[SEARCH] Extracted query: '{clean_query}'")
+
+            if not clean_query:
+                logger.info("[SEARCH] Route selected: BrowserManager.search (Empty query clarification)")
+                return {
+                    "intent": "web_search",
+                    "action": "search",
+                    "provider": "google",
+                    "target": "",
+                    "query": "",
+                    "empty_query": True,
+                    "confidence": 1.0,
+                    "raw_text": effective_raw,
+                    "is_explicit_search": True
+                }
+
+            prov, target_q, exact_q = self._resolve_search_provider_and_query(clean_query)
+            if prov == "project":
+                logger.info(f"[SEARCH] Route selected: Local code search ({exact_q})")
+                return {
+                    "intent": "local_search",
+                    "action": "search_code",
+                    "target": target_q,
+                    "query": exact_q,
+                    "confidence": 1.0,
+                    "raw_text": effective_raw,
+                    "is_explicit_search": True
+                }
+
+            logger.info(f"[SEARCH] Route selected: BrowserManager.search ({prov})")
+            return {
+                "intent": "web_search",
+                "action": "search",
+                "provider": prov,
+                "target": target_q,
+                "query": exact_q,
+                "empty_query": False,
+                "confidence": 1.0,
+                "raw_text": effective_raw,
+                "is_explicit_search": True
+            }
+
+        logger.info(f"Intent Engine analyzing command: '{clean}' (Raw: '{effective_raw}')")
 
         if not clean:
             return {
@@ -130,18 +232,54 @@ class IntentEngine:
             return {"intent": "test_speech", "action": "test_speech", "target": "speech", "confidence": 0.98, "query": clean, "raw_text": raw_text}
 
         # -------------------------------------------------------------
+        # 4. EXPLICIT COMMAND-MANAGEMENT INTENTS
+        # -------------------------------------------------------------
+        if command_manager.is_command_management_query(clean) or command_manager.is_command_management_query(effective_raw):
+            logger.info(f"[ROUTER] Command management query detected: '{clean}'")
+            return {
+                "intent": "command_management",
+                "action": "manage_commands",
+                "target": clean,
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": effective_raw
+            }
+
+        # -------------------------------------------------------------
+        # 5. VALIDATED CUSTOM COMMAND MATCHES
+        # -------------------------------------------------------------
+        custom_cmd, conf = custom_command_registry.find_matching_command(clean)
+        if not custom_cmd and effective_raw:
+            custom_cmd, conf = custom_command_registry.find_matching_command(effective_raw)
+
+        if custom_cmd and conf >= 0.85:
+            logger.info(f"[ROUTER] Validated custom command matched: '{custom_cmd.name}' (Confidence: {conf:.2f})")
+            return {
+                "intent": "custom_command",
+                "action": "execute_workflow",
+                "command_id": custom_cmd.command_id,
+                "command_name": custom_cmd.name,
+                "workflow": custom_cmd.workflow_definition,
+                "risk_level": custom_cmd.risk_classification,
+                "target": custom_cmd.name,
+                "confidence": conf,
+                "query": clean,
+                "raw_text": effective_raw
+            }
+
+        # -------------------------------------------------------------
         # 1B. CAMERA & VISION PERCEPTION INTENTS
         # -------------------------------------------------------------
         if any(term in clean for term in [
             "turn on the camera", "turn on camera", "start camera", "enable camera",
-            "open camera", "start vision", "open vision", "turn on vision",
+            "start vision", "open vision", "turn on vision",
             "activate camera", "activate vision", "enable webcam", "turn on webcam", "start webcam"
         ]):
             return {"intent": "turn_on_camera", "action": "camera.start", "target": "camera", "confidence": 0.98, "query": clean, "raw_text": raw_text}
 
         if any(term in clean for term in [
             "turn off the camera", "turn off camera", "stop camera", "disable camera",
-            "close camera", "stop vision", "close vision", "turn off vision",
+            "stop vision", "close vision", "turn off vision",
             "deactivate camera", "deactivate vision", "disable webcam", "turn off webcam", "stop webcam"
         ]):
             return {"intent": "turn_off_camera", "action": "camera.stop", "target": "camera", "confidence": 0.98, "query": clean, "raw_text": raw_text}
@@ -187,8 +325,10 @@ class IntentEngine:
         if math_match:
             return {"intent": "math_calculation", "action": "calculate", "target": clean, "confidence": 0.96, "query": clean, "raw_text": raw_text}
 
+
         # -------------------------------------------------------------
         # 4. IDENTITY, HELP & ABOUT INTENTS
+        # -------------------------------------------------------------
         # -------------------------------------------------------------
         identity_queries = [
             "who are you", "who made you", "who built you", "who created you", 
@@ -246,6 +386,44 @@ class IntentEngine:
             return {"intent": "repeat_response", "action": "repeat_speech", "target": None, "confidence": 0.95, "query": clean, "raw_text": raw_text}
 
         # -------------------------------------------------------------
+        # 6.5 CONTENT GENERATION & DRAFTING INTENTS
+        # -------------------------------------------------------------
+        err_m = re.match(r"^explain\s+(?:this\s+)?(?:python\s+)?error[:\s]+(.+)$", effective_raw, re.IGNORECASE) or re.match(r"^explain\s+(?:this\s+)?(?:python\s+)?error[:\s]+(.+)$", clean, re.IGNORECASE)
+        if err_m:
+            err_concept = err_m.group(1).strip()
+            return {
+                "intent": "content_generation",
+                "action": "explain_concept",
+                "target": err_concept,
+                "concept": err_concept,
+                "confidence": 0.96,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        if clean in ["summarize this webpage", "summarize the webpage", "summarize current webpage", "summarize webpage", "summarize this page", "summarize page"]:
+            return {
+                "intent": "content_generation",
+                "action": "summarize_page",
+                "target": "current_webpage",
+                "confidence": 0.96,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        em_match = re.match(r"^write\s+(?:a\s+)?professional\s+email\s+(?:about\s+)?(.+)$", clean, re.IGNORECASE)
+        if em_match:
+            topic = em_match.group(1).strip()
+            return {
+                "intent": "content_generation",
+                "action": "draft_email",
+                "target": topic,
+                "confidence": 0.96,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # -------------------------------------------------------------
         # 7. SAFETY FIRST: Filter Informational Questions
         # -------------------------------------------------------------
         if self._is_informational_query(raw_text, clean):
@@ -298,7 +476,7 @@ class IntentEngine:
         greetings = [
             "hello", "hi", "namaste", "good morning", "good evening", 
             "good afternoon", "good night", "yo", "hey buddy", "howdy", "hey",
-            "what's up", "whats up"
+            "what's up", "whats up", "what s up", "what is up"
         ]
         if clean in greetings or any(clean.startswith(g) for g in ["hello", "hi ", "namaste", "good morning", "good evening", "good afternoon", "good night", "hey "]):
             return {"intent": "greeting", "action": "respond_greeting", "target": clean, "confidence": 0.95, "query": clean, "raw_text": raw_text}
@@ -574,6 +752,53 @@ class IntentEngine:
             return {"intent": "file_access", "action": "open_file", "target": file_name, "confidence": 0.95, "query": clean, "raw_text": raw_text}
 
         # -------------------------------------------------------------
+        # 18.5 MULTI-TAB, DEVELOPER, FOLLOW-UP & PROJECT SEARCH
+        # -------------------------------------------------------------
+        multi_tab_m = re.match(r"^open\s+(?:three|two|four|five|\d+)?\s*(?:websites|sites|urls)?\s*in\s+(?:separate|different)?\s*tabs[:\s]+(.+)$", clean, re.IGNORECASE)
+        if not multi_tab_m and "in separate tabs" in clean:
+            multi_tab_m = re.match(r"^open\s+(.+?)\s+in\s+separate\s+tabs[:\s]*(.*)$", clean, re.IGNORECASE)
+        if multi_tab_m:
+            raw_urls = multi_tab_m.group(1).strip()
+            if len(multi_tab_m.groups()) > 1 and multi_tab_m.group(2).strip():
+                raw_urls = multi_tab_m.group(2).strip()
+            urls = [u.strip() for u in re.split(r"[,;]+|\s+and\s+", raw_urls) if u.strip()]
+            return {
+                "intent": "browser_control",
+                "action": "open_multiple",
+                "target": urls,
+                "urls": urls,
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        if clean in ["run tests", "run the tests", "open tests", "open the tests", "run project tests", "test project", "open my project and run its tests", "open my project and run it"] or clean.startswith("run tests") or clean.startswith("run the tests"):
+            return {"intent": "developer_workflow", "action": "run_tests", "target": None, "confidence": 0.95, "query": clean, "raw_text": raw_text}
+
+        if clean in ["open the second result", "open second result", "open result two", "open result 2"]:
+            return {"intent": "follow_up", "action": "open_result_index", "target": "2", "confidence": 0.95, "query": clean, "raw_text": raw_text}
+
+        if clean in ["open the first result", "open first result", "open result one", "open result 1"]:
+            return {"intent": "follow_up", "action": "open_result_index", "target": "1", "confidence": 0.95, "query": clean, "raw_text": raw_text}
+
+        if clean in ["open the file you just created", "open the created file", "open the file"]:
+            return {"intent": "follow_up", "action": "open_last_created_file", "target": None, "confidence": 0.95, "query": clean, "raw_text": raw_text}
+
+        find_proj_m = re.match(r"^find\s+(?:a\s+)?file\s+in\s+(?:the\s+)?project\s+(.+)$", clean, re.IGNORECASE)
+        if not find_proj_m and clean.startswith("find file in project "):
+            find_proj_m = re.match(r"^find\s+file\s+in\s+project\s+(.+)$", clean, re.IGNORECASE)
+        if find_proj_m:
+            filename = find_proj_m.group(1).strip()
+            return {
+                "intent": "local_search",
+                "action": "find_file",
+                "target": filename,
+                "query": filename,
+                "confidence": 0.96,
+                "raw_text": raw_text
+            }
+
+        # -------------------------------------------------------------
         # 19. OPEN APP & OPEN WEBSITE INTENTS
         # -------------------------------------------------------------
         open_patterns = [
@@ -673,6 +898,218 @@ class IntentEngine:
         # -------------------------------------------------------------
         # 21. CONVERSATIONAL FALLBACK & UNRECOGNIZED INPUT
         # -------------------------------------------------------------
+        # -------------------------------------------------------------
+        # 21. YOUTUBE PLAYBACK CONTROLS
+        # -------------------------------------------------------------
+        if clean in ["pause video", "pause the video", "pause youtube", "play video", "play the video", "play youtube", "resume video"]:
+            return {"intent": "youtube_control", "action": "play_pause", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["skip forward", "skip 30 seconds", "fast forward video", "seek forward", "forward 30 seconds"]:
+            return {"intent": "youtube_control", "action": "seek_forward", "target": "30", "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["skip backward", "rewind video", "rewind", "seek backward"]:
+            return {"intent": "youtube_control", "action": "seek_backward", "target": "10", "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["mute video", "unmute video"]:
+            return {"intent": "youtube_control", "action": "mute", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["fullscreen video", "video fullscreen"]:
+            return {"intent": "youtube_control", "action": "fullscreen", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["toggle captions", "turn on captions", "turn off captions", "subtitles"]:
+            return {"intent": "youtube_control", "action": "captions", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 22. WRITING & CONTENT GENERATION INTENTS
+        # -------------------------------------------------------------
+        if clean.startswith("write an email") or clean.startswith("draft an email") or clean.startswith("write a professional email") or clean == "write email":
+            topic = re.sub(r"^(?:write an email|draft an email|write a professional email|write email)\s*(?:about|for|to)?\s*", "", clean).strip() or "Professional Communication"
+            return {"intent": "content_generation", "action": "draft_email", "target": topic, "content_type": "email", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean.startswith("write a readme") or clean.startswith("create a readme") or clean.startswith("generate a readme") or clean == "write a project readme":
+            topic = re.sub(r"^(?:write a readme|create a readme|generate a readme|write a project readme)\s*(?:for|about)?\s*", "", clean).strip() or "Project Documentation"
+            return {"intent": "content_generation", "action": "draft_readme", "target": topic, "content_type": "readme", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean.startswith("write python code") or clean.startswith("generate code") or clean.startswith("generate python code") or clean.startswith("write code for") or clean == "write python code":
+            topic = re.sub(r"^(?:write python code|generate code|generate python code|write code for|write code)\s*", "", clean).strip() or "Python Utility"
+            return {"intent": "content_generation", "action": "generate_code", "target": topic, "content_type": "code", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean.startswith("create a report") or clean.startswith("write a report") or clean.startswith("generate a report"):
+            topic = re.sub(r"^(?:create a report|write a report|generate a report)\s*(?:on|about|for)?\s*", "", clean).strip() or "Analysis Report"
+            return {"intent": "content_generation", "action": "draft_report", "target": topic, "content_type": "report", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean.startswith("create a checklist") or clean.startswith("make a checklist"):
+            topic = re.sub(r"^(?:create a checklist|make a checklist)\s*(?:for|about)?\s*", "", clean).strip() or "Action Items"
+            return {"intent": "content_generation", "action": "draft_checklist", "target": topic, "content_type": "checklist", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean.startswith("explain this error") or clean.startswith("explain error") or clean.startswith("explain this python error"):
+            err_text = re.sub(r"^(?:explain this error|explain error|explain this python error)\s*[:\s]*", "", effective_raw, flags=re.IGNORECASE).strip() or "Application Exception"
+            return {"intent": "content_generation", "action": "explain_concept", "target": err_text, "content_type": "explanation", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean.startswith("summarize this webpage") or clean.startswith("summarize this page") or clean == "summarize page":
+            return {"intent": "content_generation", "action": "summarize_page", "target": "current_webpage", "content_type": "summary", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean.startswith("compare these two products") or clean.startswith("compare options"):
+            return {"intent": "content_generation", "action": "compare_options", "target": clean, "content_type": "comparison", "confidence": 0.95, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 23. FILESYSTEM FOLDER CREATION & SAVING INTENTS
+        # -------------------------------------------------------------
+        if clean in ["create folder", "create a folder", "make a folder", "make folder", "new folder"]:
+            return {"intent": "filesystem_control", "action": "create_folder", "target": "", "missing_arg": "folder_name", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean.startswith("create a folder for ") or clean.startswith("create folder ") or clean.startswith("make a folder for "):
+            folder_name = re.sub(r"^(?:create a folder for|create folder|make a folder for)\s*", "", clean).strip()
+            if not folder_name:
+                return {"intent": "filesystem_control", "action": "create_folder", "target": "", "missing_arg": "folder_name", "confidence": 0.95, "raw_text": raw_text}
+            return {"intent": "filesystem_control", "action": "create_folder", "target": folder_name, "confidence": 0.95, "raw_text": raw_text}
+
+        if clean in ["write document", "write a document", "write content", "draft document", "draft content"]:
+            return {"intent": "content_generation", "action": "write", "target": "", "missing_arg": "topic", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean in ["save file", "save the file", "save document", "save a file"]:
+            return {"intent": "filesystem_control", "action": "save_file", "target": "", "missing_arg": "destination", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean.startswith("save to ") or clean.startswith("save this file as ") or clean.startswith("save a readme"):
+            file_target = re.sub(r"^(?:save to|save this file as|save a readme to|save a readme in|save a readme)\s*", "", clean).strip() or "README.md"
+            return {"intent": "filesystem_control", "action": "save_file", "target": file_target, "confidence": 0.95, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 24. DEVELOPER WORKFLOWS & TESTING
+        # -------------------------------------------------------------
+        if clean in ["run tests", "run the tests", "open tests", "open the tests", "run project tests", "test project", "open my project and run its tests", "open my project and run it"]:
+            return {"intent": "developer_workflow", "action": "run_tests", "target": None, "confidence": 0.95, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 25. FOLLOW-UP & CONTEXT RESOLUTION
+        # -------------------------------------------------------------
+        if clean in ["open the second result", "open second result", "open result two", "open result 2"]:
+            return {"intent": "follow_up", "action": "open_result_index", "target": "2", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean in ["open the first result", "open first result", "open result one", "open result 1"]:
+            return {"intent": "follow_up", "action": "open_result_index", "target": "1", "confidence": 0.95, "raw_text": raw_text}
+
+        if clean in ["open the file you just created", "open the created file", "open the file"]:
+            return {"intent": "follow_up", "action": "open_last_created_file", "target": None, "confidence": 0.95, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 26. OBSERVABILITY & TRANSPARENCY INTENTS (Pattern 08: Ask Why)
+        # -------------------------------------------------------------
+        if any(clean.startswith(kw) for kw in [
+            "explain what tools you just called and why",
+            "explain what tools you called",
+            "explain tool execution",
+            "why did you use that tool",
+            "why did you run that tool",
+            "what tools did you run",
+            "what tools were called",
+            "explain your decisions",
+            "explain recent tools"
+        ]) or clean in ["why did you do that", "explain actions", "explain decisions"]:
+            return {"intent": "explain_tool_execution", "action": "explain", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 27. PERSISTENT MEMORY & USER PROFILE INTENTS
+        # -------------------------------------------------------------
+        if clean.startswith("save this to memory:") or clean.startswith("save to memory:") or clean.startswith("remember this:"):
+            mem_body = re.sub(r"^(?:save this to memory:|save to memory:|remember this:)\s*", "", effective_raw, flags=re.IGNORECASE).strip()
+            return {"intent": "memory_control", "action": "save", "target": mem_body, "confidence": 0.98, "raw_text": raw_text}
+
+        if any(clean.startswith(kw) for kw in ["what decisions have i made about", "recall my notes about", "what did i decide about", "recall notes about"]):
+            topic = re.sub(r"^(?:what decisions have i made about|recall my notes about|what did i decide about|recall notes about)\s*", "", clean).strip(" ?")
+            return {"intent": "memory_control", "action": "recall", "target": topic, "confidence": 0.95, "raw_text": raw_text}
+
+        if clean.startswith("forget the note about") or clean.startswith("forget note about") or clean.startswith("forget memory"):
+            topic = re.sub(r"^(?:forget the note about|forget note about|forget memory)\s*", "", clean).strip()
+            return {"intent": "memory_control", "action": "forget", "target": topic, "confidence": 0.95, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 28. PRIVACY MODE CONTROL INTENTS
+        # -------------------------------------------------------------
+        if clean.startswith("set privacy mode to ") or clean.startswith("switch privacy mode to "):
+            target_mode = clean.replace("set privacy mode to ", "").replace("switch privacy mode to ", "").strip().upper()
+            return {"intent": "privacy_control", "action": "set_mode", "target": target_mode, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["what is my privacy mode", "check privacy mode", "privacy mode status", "privacy mode", "current privacy mode"]:
+            return {"intent": "privacy_control", "action": "get_mode", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 29. BROWSER TAB CONTROLS
+        # -------------------------------------------------------------
+        if clean in ["close tab", "close active tab", "close this tab", "close the tab"]:
+            return {"intent": "browser_control", "action": "close_tab", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["new tab", "open new tab", "open a new tab", "open tab"]:
+            return {"intent": "browser_control", "action": "new_tab", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["reopen tab", "reopen closed tab", "restore tab", "reopen the tab"]:
+            return {"intent": "browser_control", "action": "reopen_tab", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["next tab", "switch to next tab", "go to next tab"]:
+            return {"intent": "browser_control", "action": "next_tab", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["previous tab", "prev tab", "switch to previous tab", "go to previous tab"]:
+            return {"intent": "browser_control", "action": "prev_tab", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["reload page", "reload the page", "refresh page", "refresh the page", "reload", "refresh"]:
+            return {"intent": "browser_control", "action": "reload_page", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["go back", "navigate back", "page back", "browser back"]:
+            return {"intent": "browser_control", "action": "go_back", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["go forward", "navigate forward", "page forward", "browser forward"]:
+            return {"intent": "browser_control", "action": "go_forward", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["list tabs", "show open tabs", "list open tabs", "what tabs are open"]:
+            return {"intent": "browser_control", "action": "list_tabs", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        if clean in ["browser fullscreen", "toggle fullscreen", "exit fullscreen"]:
+            return {"intent": "browser_control", "action": "toggle_fullscreen", "target": None, "confidence": 0.98, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 30. UNSUPPORTED CAPABILITY INTENTS
+        # -------------------------------------------------------------
+        unsupported_patterns = [
+            r"^(?:order|buy)\s+(?:pizza|food|groceries|tickets?|stuff)",
+            r"^(?:book)\s+(?:a\s+)?(?:flight|hotel|cab|uber|taxi|ride)",
+            r"^(?:call|phone)\s+(?:mom|dad|anyone|someone|\w+)",
+            r"^(?:send)\s+(?:sms|text\s+message)",
+            r"^(?:turn\s+(?:on|off))\s+(?:the\s+)?(?:lights?|fan|ac|thermostat)",
+        ]
+        if any(re.search(pat, clean, re.IGNORECASE) for pat in unsupported_patterns):
+            return {
+                "intent": "unsupported_capability",
+                "action": "unsupported",
+                "target": clean,
+                "confidence": 0.95,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # -------------------------------------------------------------
+        # 31. CONVERSATIONAL QUESTIONS & FALLBACK
+        # -------------------------------------------------------------
+        if clean in ["invalid command", "unknown command"]:
+            return {
+                "intent": "invalid_command",
+                "action": "invalid_command",
+                "target": None,
+                "confidence": 0.95,
+                "query": raw_text,
+                "raw_text": raw_text,
+                "fallback_message": "I couldn't complete that request, Sir. Try another command."
+            }
+
+        question_starters = ["what", "who", "where", "when", "why", "how", "which", "can", "could", "is", "do", "explain", "tell me"]
+        if clean.endswith("?") or any(clean.startswith(qw) for qw in question_starters):
+            return {
+                "intent": "question",
+                "action": "query",
+                "target": None,
+                "confidence": 0.80,
+                "query": raw_text,
+                "raw_text": raw_text
+            }
         logger.info(f"Unmapped command falling back to conversation: '{clean}'")
         return {
             "intent": "conversation",
@@ -680,8 +1117,7 @@ class IntentEngine:
             "target": None,
             "confidence": 0.50,
             "query": raw_text,
-            "raw_text": raw_text,
-            "fallback_message": "I'm not sure what you meant, but I can discuss that with you."
+            "raw_text": raw_text
         }
 
     def classify_intent(self, text: str) -> tuple:

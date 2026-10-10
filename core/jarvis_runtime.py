@@ -19,6 +19,8 @@ from core.conversation_manager import ConversationManager
 from memory.session_memory import SessionMemory
 from memory.execution_history import ExecutionHistory
 from modules.system.executor import CommandExecutor
+from core.tracing import tracer
+from core.response_registry import response_registry, CommandOutcome
 
 from core.ai.intelligence_router import intelligence_router, MODE_FAST_LOCAL, MODE_CONTEXT, MODE_REASONING, MODE_QUESTION
 from core.proactive_daemon import proactive_daemon
@@ -59,7 +61,6 @@ class JarvisRuntime:
         self._dedup_lock = threading.Lock()
 
         # Observers / Callbacks
-        # Callbacks
         self.on_status_change_cb: Optional[Callable[[str], None]] = None
         self.on_speech_text_cb: Optional[Callable[[str], None]] = None
         self.on_pipeline_stage_cb: Optional[Callable] = None
@@ -75,15 +76,20 @@ class JarvisRuntime:
         self.history_tracker = ExecutionHistory(limit=100)
         self.executor = CommandExecutor(history_tracker=self.history_tracker)
         self.brain = Brain(executor=self.executor)
-        self.transcriber = SpeechTranscriber()
+        self.transcriber = SpeechTranscriber(cpu_threads=getattr(config, "whisper_threads", 4))
         self.normalizer = CommandNormalizer()
         self.intent_engine = IntentEngine()
         self.memory = SessionMemory(max_turns=20)
         self.conversation_manager = ConversationManager(max_turns=20, session_timeout=60.0)
         self.proactive_daemon = proactive_daemon
 
+        from core.multi_step_planner import multi_step_planner
+        self.multi_step_planner = multi_step_planner
+        self.multi_step_planner.set_dependencies(self.intent_engine, self.executor)
+
         # Audio Output Engine
         self.tts_manager = TTSManager()
+        self.response_registry = response_registry
         self.response_manager = ResponseManager(speaker=self.tts_manager)
 
         # Perception & Camera Engine
@@ -91,7 +97,13 @@ class JarvisRuntime:
         self.camera_manager = camera_manager
 
         # Audio Input Engine
-        self.listener = SpeechListener(threshold=getattr(config, "vad_threshold", 0.015), enable_vad_onset=True)
+        self.listener = SpeechListener(
+            sample_rate=getattr(config, "audio_sample_rate", 16000),
+            threshold=getattr(config, "vad_threshold", 0.015),
+            silence_duration=getattr(config, "silence_duration", 0.8),
+            max_duration=getattr(config, "max_duration", 5.0),
+            enable_vad_onset=True
+        )
 
         # Wake Word Detector
         self.wakeword_detector = WakeWordDetectorFactory.create_detector(
@@ -111,6 +123,7 @@ class JarvisRuntime:
         self.listener.on_speech_end_cb = self._on_speech_end
         self.listener.on_barge_in_cb = self.tts_manager.interrupt
 
+        self.tts_manager.on_start_synthesizing_cb = self._on_speaker_synthesizing
         self.tts_manager.on_start_speaking_cb = self._on_speaker_started
         self.tts_manager.on_stop_speaking_cb = self._on_speaker_stopped
         self.tts_manager.on_audio_amplitude_cb = lambda amp: self._trigger_cb(self.on_audio_amplitude_cb, amp)
@@ -119,11 +132,13 @@ class JarvisRuntime:
         self.camera_manager.on_gesture_cb = lambda event: self._trigger_cb(self.on_gesture_cb, event)
 
     def start(self):
-        """Starts background loops (VAD listener, TTS worker, WakeWord detector, Proactive daemon)."""
+        """Starts background loops (VAD listener, TTS worker, WakeWord detector, STT prewarm)."""
         logger.info("Starting background services...")
+        self.transcriber.preload_in_background()
         self.tts_manager.start(
             self._on_speaker_started,
             self._on_speaker_stopped,
+            self._on_speaker_synthesizing,
             on_audio_amplitude=lambda amp: self._trigger_cb(self.on_audio_amplitude_cb, amp)
         )
         self.listener.start(self._on_speech_start, self._on_speech_end)
@@ -176,7 +191,6 @@ class JarvisRuntime:
         if on_camera_state: self.on_camera_state_cb = on_camera_state
         if on_gesture: self.on_gesture_cb = on_gesture
 
-
     def _update_status(self, status: str, utterance_id: Optional[str] = None):
         with self._state_lock:
             allowed = LEGAL_TRANSITIONS.get(self.current_status, VALID_STATES)
@@ -208,14 +222,15 @@ class JarvisRuntime:
     # ==========================================
     def _on_wakeword(self, word: str):
         if self._tts_speaking_lock or self.tts_manager.is_speaking():
-            logger.info("Suppressing wake word trigger during TTS speech playback.")
-            return
+            if self.tts_manager.is_playing():
+                logger.info(f"[BARGE_IN] Wake word '{word}' detected during active playback. Interrupting TTS.")
+                self.tts_manager.interrupt(force=True)
+            else:
+                logger.info("Suppressing wake word trigger during TTS synthesis.")
+                return
 
         utterance_id = uuid.uuid4().hex[:6].upper()
         logger.info(f"[UTTERANCE {utterance_id}][WAKE_WORD_DETECTED] Keyword: '{word}'")
-        if self.tts_manager.is_speaking():
-            self.tts_manager.interrupt()
-
         self._update_status("LISTENING", utterance_id)
         self._update_speech_text("Listening...")
 
@@ -235,13 +250,17 @@ class JarvisRuntime:
 
     def _on_speech_end(self, wav_path: str):
         utterance_id = uuid.uuid4().hex[:6].upper()
-        t0_start = time.time()
+        t_speech_end = time.time()
+        trace = tracer.start_trace()
+        trace.record_timestamp("speech_end", t_speech_end)
+        trace.record_timestamp("vad_complete", t_speech_end)
         logger.info(f"[UTTERANCE {utterance_id}][RECORDING_FINISHED] Speech audio saved: {wav_path}")
         self._update_status("TRANSCRIBING", utterance_id)
 
         text = ""
         whisper_duration_s = 0.0
         audio_dur_s = 0.0
+        t_stt_start = time.time()
         try:
             t0_whisper = time.time()
             text = self.transcriber.transcribe(wav_path)
@@ -269,12 +288,13 @@ class JarvisRuntime:
         # Empty speech early exit
         if not text or not text.strip():
             logger.info(f"[UTTERANCE {utterance_id}][EMPTY_TRANSCRIPT] Silence or noise discarded. Returning to STANDBY.")
+            tracer.end_trace(trace.correlation_id, status="SILENCE_DETECTED")
             self._update_status("STANDBY", utterance_id)
             self._update_speech_text("Standby. Say 'Jarvis' or speak into microphone.")
             return
 
         self._update_speech_text(f"You: {text}")
-        self.process_command(text, utterance_id=utterance_id, t0_start=t0_start, whisper_ms=whisper_duration_s * 1000, audio_dur_s=audio_dur_s)
+        self.process_command(text, utterance_id=utterance_id, t0_start=t_speech_end, whisper_ms=whisper_duration_s * 1000, audio_dur_s=audio_dur_s)
 
     def resolve_permission(self, confirmed: bool):
         """Resolves a pending safety-restricted action from UI dialog confirmation."""
@@ -313,7 +333,6 @@ class JarvisRuntime:
             if (now - last_time) < 1.2:
                 return True
             self._dedup_cache[normalized_text] = now
-            # Clean old entries
             self._dedup_cache = {k: v for k, v in self._dedup_cache.items() if now - v < 5.0}
             return False
 
@@ -361,7 +380,11 @@ class JarvisRuntime:
 
             # Single aggregated concise summary response for multi-commands
             summary_text = self.response_manager.local_engine.format_multi_command_response(sub_results)
-            self.response_manager.success(summary_text, spoken_text=summary_text, speak=True)
+            all_ok = all(r.get("success", False) for r in sub_results) if sub_results else False
+            if all_ok:
+                self.response_manager.success(summary_text, spoken_text=summary_text, speak=True)
+            else:
+                self.response_manager.failure(summary_text, spoken_text=summary_text, speak=True)
             self._notify_pipeline_stage(text, normalized, "multi_command", "Chain Executed", summary_text, "Speaking")
 
             t_total_ms = (time.time() - t0_start) * 1000
@@ -383,7 +406,8 @@ class JarvisRuntime:
         uid = utterance_id or uuid.uuid4().hex[:6].upper()
         t0_proc = time.time()
         raw_full_text = raw_full_text or text
-        
+        trace = tracer.get_current_trace()
+
         # Route via 3-Layer Intelligence Router
         t0_route = time.time()
         req = intelligence_router.route(text, session_context=self.conversation_manager.get_context())
@@ -420,35 +444,53 @@ class JarvisRuntime:
         # Case 3: Conversational Greetings, Acknowledgments & Etiquette
         intent_lower = req.intent.lower()
         if intent_lower in ["greeting", "thank_you", "goodbye", "help", "identity", "repeat_response", "acknowledgement", "affirmation", "negation", "how_are_you", "status_check"]:
-            tmpl_key = intent_lower
-            resp_text = self.response_manager.local_engine.format_intent_response({"intent": tmpl_key, "raw": normalized_text})
-            res = self.response_manager.conversation(resp_text, speak=speak)
-            self._notify_pipeline_stage(raw_full_text, normalized_text, f"{tmpl_key}:respond", f"N/A ({tmpl_key.title()})", resp_text, "Speaking")
-            
+            if intent_lower == "greeting":
+                res = self.response_manager.greeting(normalized_text, speak=speak)
+                resp_text = res.get("text", "Hello, Sir.")
+            elif intent_lower == "help":
+                res = self.response_manager.help_info(speak=speak)
+                resp_text = res.get("text", "How can I assist you?")
+            elif intent_lower == "identity":
+                res = self.response_manager.identity_info(speak=speak)
+                resp_text = res.get("text", "I am JARVIS.")
+            elif intent_lower == "repeat_response":
+                res = self.response_manager.repeat_last_response(speak=speak)
+                resp_text = res.get("text", "")
+            else:
+                resp_text = self.response_manager.local_engine.format_intent_response({"intent": intent_lower, "raw": normalized_text})
+                res = self.response_manager.conversation(resp_text, speak=speak)
+
+            self._notify_pipeline_stage(raw_full_text, normalized_text, f"{intent_lower}:respond", f"N/A ({intent_lower.title()})", resp_text, "Speaking")
             total_ms = (time.time() - (t0_start or t0_proc)) * 1000
             logger.info(f"[PERFORMANCE][{uid}] capture={audio_dur_s:.2f}s whisper={whisper_ms:.0f}ms routing={routing_ms:.1f}ms exec=0ms total={total_ms:.0f}ms")
-            return {"success": True, "action": tmpl_key, "message": resp_text}
+            return {"success": True, "action": intent_lower, "message": resp_text}
 
         # Case 4: Layer 1 Fast Local & Layer 2 Deterministic Actions
         os_intents = [
-            "open_app", "close_app", "minimize_app", "maximize_app", "window_control", "file_access",
+            "open_app", "application.launch", "close_app", "minimize_app", "maximize_app", "window_control", "file_access",
             "screenshot", "system_control", "status_request", "system_action",
             "open_website", "history_query", "terminal_execute", "system_telemetry",
             "open_new_chrome_tab", "open_new_chrome_window",
             "project_control", "filesystem_control", "web_search",
             "time_query", "date_query", "math_calculation", "media_control",
             "test_speech", "test_microphone",
-            "turn_on_camera", "turn_off_camera", "start_hand_tracking", "stop_hand_tracking", "camera_snapshot"
+            "browser_control", "youtube_control", "content_generation",
+            "local_search", "developer_workflow", "follow_up",
+            "explain_tool_execution", "memory_control", "privacy_control",
+            "command_management", "custom_command",
+            "turn_on_camera", "turn_off_camera", "start_hand_tracking", "stop_hand_tracking", "camera_snapshot",
+            "unsupported_capability", "invalid_command"
         ]
 
         if intent_lower in os_intents:
-            intent_node = {
+            intent_node = dict(req.entities) if req.entities else {}
+            intent_node.update({
                 "intent": intent_lower,
                 "action": req.action,
                 "target": req.target,
                 "confidence": req.confidence,
                 "entities": req.entities
-            }
+            })
             t0_exec = time.time()
             exec_res = self._execute_intent(intent_node, confirm=False, speak=speak, utterance_id=uid)
             exec_ms = (time.time() - t0_exec) * 1000
@@ -466,6 +508,7 @@ class JarvisRuntime:
             conv_ms = (time.time() - t0_conv) * 1000
             response_text = conv_res["text"]
             self.memory.add_interaction(text, response_text)
+
             self.response_manager.conversation(response_text, speak=speak)
             stage_source = conv_res.get("source", "Conversation")
             self._notify_pipeline_stage(raw_full_text, normalized_text, f"chat:{req.action}", f"N/A ({stage_source})", response_text, "Speaking")
@@ -478,6 +521,7 @@ class JarvisRuntime:
         uid = utterance_id or uuid.uuid4().hex[:6].upper()
         self._update_status("EXECUTING", uid)
         intent = intent_node.get("intent", "").lower()
+        action = intent_node.get("action") or intent
 
         # Handle Camera Subsystem Actions Directly
         if intent in ["turn_on_camera", "turn_off_camera", "start_hand_tracking", "stop_hand_tracking", "camera_snapshot"]:
@@ -501,10 +545,87 @@ class JarvisRuntime:
 
             res = {"success": ok, "action": intent, "target": "camera", "message": msg}
             self.response_manager.conversation(msg, speak=speak)
-            self._notify_action_complete(intent, ok, msg)
+            self._update_status("STANDBY", uid)
+            self._update_speech_text(msg)
+            if self.on_action_complete_cb:
+                self._trigger_cb(self.on_action_complete_cb, intent, ok, msg)
             self._notify_pipeline_stage("", "", f"camera:{intent}", "CameraManager", msg, "Speaking")
             return res
+
+        # 1. Missing argument check
+        if intent_node.get("missing_arg"):
+            missing_msg = self.response_registry.get_missing_arg_prompt(intent_node) or "What would you like me to do, Sir?"
+            logger.info(f"[MISSING_ARG] Prompting: '{missing_msg}'")
+            self.response_manager.missing_argument(missing_msg, speak=speak)
+            self._update_status("STANDBY", uid)
+            self._update_speech_text(missing_msg)
+            if self.on_action_complete_cb:
+                self._trigger_cb(self.on_action_complete_cb, action, False, missing_msg)
+            return {
+                "success": False,
+                "outcome": CommandOutcome.MISSING_ARGUMENT.value,
+                "action": action,
+                "message": missing_msg
+            }
+
+        # 2. Unsupported capability
+        if intent == "unsupported_capability":
+            unsupported_msg = self.response_registry.get_outcome_response(CommandOutcome.UNSUPPORTED_CAPABILITY)
+            logger.info(f"[UNSUPPORTED] '{unsupported_msg}'")
+            self.response_manager.unsupported_capability(unsupported_msg, speak=speak)
+            self._update_status("STANDBY", uid)
+            self._update_speech_text(unsupported_msg)
+            if self.on_action_complete_cb:
+                self._trigger_cb(self.on_action_complete_cb, action, False, unsupported_msg)
+            return {
+                "success": False,
+                "outcome": CommandOutcome.UNSUPPORTED_CAPABILITY.value,
+                "action": action,
+                "message": unsupported_msg
+            }
+
+        # 3. Invalid command
+        if intent == "invalid_command":
+            invalid_msg = self.response_registry.get_outcome_response(CommandOutcome.INVALID_COMMAND)
+            logger.info(f"[INVALID_COMMAND] '{invalid_msg}'")
+            self.response_manager.invalid_command(invalid_msg, speak=speak)
+            self._update_status("STANDBY", uid)
+            self._update_speech_text(invalid_msg)
+            if self.on_action_complete_cb:
+                self._trigger_cb(self.on_action_complete_cb, action, False, invalid_msg)
+            return {
+                "success": False,
+                "outcome": CommandOutcome.INVALID_COMMAND.value,
+                "action": action,
+                "message": invalid_msg
+            }
+
+        # 4. Acknowledgment before potentially longer operations
+        ack_msg = self.response_registry.get_acknowledgment(intent_node)
+        if ack_msg and speak:
+            logger.info(f"[ACKNOWLEDGMENT] Speaking: '{ack_msg}'")
+            self.response_manager.acknowledge_command(ack_msg, speak=speak)
+
+        trace = tracer.get_current_trace()
+        t_tool_start = time.time()
+        if trace:
+            trace.record_timestamp("tool_start", t_tool_start)
+
+        self._update_status("EXECUTING", uid)
         result = self.executor.execute(intent_node, confirm=confirm)
+        t_tool_end = time.time()
+
+        if trace:
+            trace.record_timestamp("tool_end", t_tool_end)
+            category = "[EXTERNAL_API]" if intent in ["open_website", "web_search"] else "[OS]"
+            trace.record_tool_execution(
+                name=action,
+                category=category,
+                operation=action,
+                duration_ms=(t_tool_end - t_tool_start) * 1000,
+                success=result.get("success", False),
+                error=result.get("message") if not result.get("success") else None
+            )
 
         if result.get("pending_confirmation"):
             self.pending_intent = intent_node
@@ -515,24 +636,39 @@ class JarvisRuntime:
             return result
 
         self.pending_intent = None
-        success = result["success"]
-        action = result["action"]
-        message = result["message"]
-        logger.info(f"[UTTERANCE {uid}][EXECUTOR_RESULT] Success={success} | Action='{action}' | Message='{message}'")
+        success = result.get("success", False)
+        action = result.get("action", intent)
+        message = result.get("message", "")
+        raw_outcome = result.get("outcome")
+        if raw_outcome:
+            try:
+                outcome = CommandOutcome(raw_outcome)
+            except ValueError:
+                outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+        else:
+            outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
 
-        spoken = self.response_manager.local_engine.format_intent_response(intent_node, result)
+        logger.info(f"[UTTERANCE {uid}][EXECUTOR_RESULT] Success={success} | Outcome={outcome.value} | Action='{action}' | Message='{message}'")
 
         if success:
+            spoken = self.response_registry.get_success_response(intent_node, result)
             self.response_manager.success(message, spoken_text=spoken, speak=speak)
         else:
+            spoken = self.response_registry.get_failure_response(intent_node, outcome, message)
             self.response_manager.failure(message, spoken_text=spoken, speak=speak)
 
+        self._update_status("STANDBY", uid)
+        self._update_speech_text(spoken)
+
+        if trace:
+            trace.record_timestamp("response_ready", time.time())
+
         if self.on_action_complete_cb:
-            self._trigger_cb(self.on_action_complete_cb, action, success, message)
+            self._trigger_cb(self.on_action_complete_cb, action, success, spoken)
         if self.on_history_update_cb:
             self._trigger_cb(self.on_history_update_cb, self.history_tracker.get_history())
 
-        return {"success": success, "action": action, "message": spoken}
+        return {"success": success, "outcome": outcome.value, "action": action, "message": spoken}
 
     def _notify_pipeline_stage(self, raw, norm, intent_str, exec_str, resp_str, state):
         if self.on_pipeline_stage_cb:
@@ -541,6 +677,11 @@ class JarvisRuntime:
     # ==========================================
     # DUPLEX AUDIO & SPEAKER STATUS
     # ==========================================
+    def _on_speaker_synthesizing(self):
+        self._tts_speaking_lock = True
+        self.listener.set_speaking_active(True)
+        self._update_status("SYNTHESIZING")
+
     def _on_speaker_started(self):
         self._tts_speaking_lock = True
         self.listener.set_speaking_active(True)
@@ -564,4 +705,3 @@ class JarvisRuntime:
             logger.info("Microphone active. Starting listener.")
             self.listener.start()
             self.tts_manager.speak("Systems active", interrupt=True)
-

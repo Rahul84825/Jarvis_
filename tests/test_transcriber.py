@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
+from config import config
 from core.transcriber import SpeechTranscriber
 
 class TestSpeechTranscriber(unittest.TestCase):
@@ -46,7 +47,9 @@ class TestSpeechTranscriber(unittest.TestCase):
         initial_prompt = "Jarvis, open VS Code, YouTube, Chrome, Spotify, Notepad, Calculator, lock computer, take a screenshot, calculate, system status, shutdown, restart, volume up, volume down, mute, unmute, minimize, maximize, what time is it, what is the date, search google, play music."
         mock_model_instance.transcribe.assert_called_once_with(
             "dummy_file.wav",
-            beam_size=5,
+            beam_size=getattr(config, "whisper_beam_size", 1),
+            best_of=getattr(config, "whisper_beam_size", 1),
+            temperature=0.0,
             language="en",
             initial_prompt=initial_prompt,
             condition_on_previous_text=False,

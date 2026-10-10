@@ -1,9 +1,11 @@
+import os
 import time
 import logging
 import threading
 import queue
 import numpy as np
 from abc import ABC, abstractmethod
+from typing import Optional, List
 from config import config
 
 logger = logging.getLogger("Jarvis.WakeWord")
@@ -11,13 +13,13 @@ logger = logging.getLogger("Jarvis.WakeWord")
 class WakeWordDetector(ABC):
     """Abstract base class defining the standardized Wake Word Detector interface.
     Guarantees seamless engine swap-outs (OpenWakeWord, Porcupine, Mock)
-    without modifying the coordinating business logic.
+    without modifying coordinating business logic.
     """
-    
+
     @abstractmethod
     def start(self, callback):
         """Starts the wake word detector background thread loop.
-        
+
         Args:
             callback: Function to invoke when wake word is detected.
                       Signature: callback(wake_word_detected: str)
@@ -34,25 +36,36 @@ class WakeWordDetector(ABC):
         """Returns True if the detector background loop is currently running."""
         pass
 
+    @abstractmethod
+    def is_available(self) -> bool:
+        """Returns True if the underlying engine dependencies and models are loaded and ready."""
+        pass
+
+    @abstractmethod
+    def get_diagnostic(self) -> str:
+        """Returns a human-readable diagnostic status string describing engine readiness."""
+        pass
+
 
 class MockWakeWordDetector(WakeWordDetector):
     """Reliable mock wake word detector running on a background thread.
     Simulates detection programmatically or via manual trigger commands.
     """
-    
+
     def __init__(self, wake_words=None, **kwargs):
         self.wake_words = wake_words or ["jarvis", "hey jarvis", "hello jarvis"]
         self._running = False
         self._thread = None
         self._callback = None
         self._lock = threading.Lock()
+        self._diagnostic = "Mock wake-word detector active (manual/synthetic trigger only)."
 
     def start(self, callback):
         with self._lock:
             if self._running:
                 logger.warning("Mock Wake Word detector is already running.")
                 return
-            
+
             logger.info("Starting Wake Word Detector (Mock Engine).")
             self._running = True
             self._callback = callback
@@ -65,7 +78,7 @@ class MockWakeWordDetector(WakeWordDetector):
                 return
             logger.info("Stopping Mock Wake Word Detector.")
             self._running = False
-            
+
         if self._thread:
             self._thread.join(timeout=1.0)
             self._thread = None
@@ -75,10 +88,16 @@ class MockWakeWordDetector(WakeWordDetector):
         with self._lock:
             return self._running
 
+    def is_available(self) -> bool:
+        return True
+
+    def get_diagnostic(self) -> str:
+        return self._diagnostic
+
     def trigger_mock_detection(self, word=None):
         detected_word = word if word in self.wake_words else self.wake_words[0]
         logger.info(f"[MOCK TRIGGER] Simulating wake word detection for: '{detected_word}'")
-        
+
         if self._callback:
             try:
                 self._callback(detected_word)
@@ -100,31 +119,72 @@ class MockWakeWordDetector(WakeWordDetector):
 class OpenWakeWordDetector(WakeWordDetector):
     """Production wrapper for OpenWakeWord (ONNX-based open source engine).
     Initializes microphone stream, handles automatic reconnection on disconnects,
-    and runs local model inference on frames.
+    and runs local ONNX model inference on audio frames.
     """
-    
+
     def __init__(self, wake_words=None, sensitivity=None, model_path=None, **kwargs):
         self.wake_words = wake_words or ["jarvis"]
-        self.sensitivity = sensitivity if sensitivity is not None else config.wakeword_sensitivity
-        self.model_path = model_path
+        self.sensitivity = sensitivity if sensitivity is not None else getattr(config, "wakeword_sensitivity", 0.5)
+        self.model_path = model_path or getattr(config, "openwakeword_model_path", "")
         self._running = False
         self._callback = None
         self._thread = None
         self._lock = threading.Lock()
-        
+        self._model = None
+        self._model_ready = False
+        self._diagnostic = "OpenWakeWord not yet initialized."
+
         # Audio buffer and debounce
         self._audio_buffer = np.array([], dtype=np.int16)
         self._debounce_until = 0.0
+
+        # Pre-check engine availability
+        self._verify_engine_readiness()
+
+    def _verify_engine_readiness(self):
+        """Verifies whether openwakeword library and models can be loaded."""
+        try:
+            import openwakeword
+            from openwakeword.model import Model
+
+            models = [self.model_path] if (self.model_path and os.path.exists(self.model_path)) else ["hey_jarvis"]
+            try:
+                self._model = Model(wakeword_models=models, inference_framework="onnx")
+                self._model_ready = True
+                self._diagnostic = f"OpenWakeWord ready with ONNX models: {list(self._model.models.keys())}."
+                logger.info(f"[OpenWakeWord] {self._diagnostic}")
+            except Exception as me:
+                self._model_ready = False
+                self._diagnostic = f"OpenWakeWord model loading failed: {me}. Standby for mic/input triggers."
+                logger.warning(f"[OpenWakeWord] {self._diagnostic}")
+        except ImportError as ie:
+            self._model_ready = False
+            self._diagnostic = f"openwakeword package not available ({ie}). Install openwakeword or use mock engine."
+            logger.warning(f"[OpenWakeWord] {self._diagnostic}")
+
+    def is_available(self) -> bool:
+        return self._model_ready
+
+    def get_diagnostic(self) -> str:
+        return self._diagnostic
 
     def start(self, callback):
         with self._lock:
             if self._running:
                 logger.warning("OpenWakeWord detector is already running.")
                 return
-            logger.info("Starting OpenWakeWord Detector...")
+
             self._callback = callback
             self._running = True
-            
+
+            if not self._model_ready:
+                # Attempt late initialization if models were downloaded after init
+                self._verify_engine_readiness()
+
+            if not self._model_ready:
+                logger.warning(f"Starting OpenWakeWord in degraded/diagnostic mode: {self._diagnostic}")
+
+            logger.info("Starting OpenWakeWord Detector background thread...")
             self._thread = threading.Thread(target=self._run_detector, name="OpenWakeWordThread", daemon=True)
             self._thread.start()
 
@@ -134,7 +194,7 @@ class OpenWakeWordDetector(WakeWordDetector):
                 return
             logger.info("Stopping OpenWakeWord Detector.")
             self._running = False
-            
+
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
@@ -146,34 +206,30 @@ class OpenWakeWordDetector(WakeWordDetector):
 
     def _run_detector(self):
         """Main detection loop that manages microphone connection and model inference."""
-        import openwakeword
-        from openwakeword.model import Model
-        import sounddevice as sd
-
-        logger.info("OpenWakeWord thread starting. Loading ONNX models...")
-        try:
-            # If a custom model path is specified, load it. Otherwise, use pre-trained jarvis model
-            models = [self.model_path] if self.model_path else ["jarvis"]
-            oww_model = Model(wakeword_models=models, inference_framework="onnxruntime")
-            logger.info(f"OpenWakeWord models loaded successfully: {list(oww_model.models.keys())}")
-        except Exception as e:
-            logger.error(f"Failed to load OpenWakeWord models: {e}", exc_info=True)
+        if not self._model_ready or self._model is None:
+            logger.warning(f"OpenWakeWord thread idling: {self._diagnostic}")
+            while self._running:
+                time.sleep(0.5)
             return
 
-        # Queue for thread-safe transfer of audio frames from callback to model thread
-        audio_queue = queue.Queue()
+        import sounddevice as sd
+
+        logger.info("OpenWakeWord thread starting audio stream capture...")
+        audio_queue = queue.Queue(maxsize=100)
 
         def audio_callback(indata, frames, time_info, status):
             if status:
-                logger.warning(f"WakeWord audio stream status: {status}")
-            # indata is float32. Convert to int16 (which openwakeword expects) and queue it
+                logger.debug(f"WakeWord audio stream status: {status}")
             clipped = np.clip(indata[:, 0], -1.0, 1.0)
             pcm_data = (clipped * 32767.0).astype(np.int16)
-            audio_queue.put(pcm_data.copy())
+            try:
+                audio_queue.put_nowait(pcm_data)
+            except queue.Full:
+                pass  # Avoid memory bloat if model thread falls behind
 
         stream = None
         reconnect_delay = 1.0
-        
+
         while self._running:
             # 1. Establish microphone stream with auto-recovery
             if stream is None:
@@ -183,34 +239,31 @@ class OpenWakeWordDetector(WakeWordDetector):
                         samplerate=16000,
                         channels=1,
                         callback=audio_callback,
-                        blocksize=1280,  # ~80ms blocks
-                        latency='high',   # prioritized buffer stability
+                        blocksize=1280,  # 80ms blocks at 16kHz
+                        latency='high',
                         dtype='float32'
                     )
                     stream.start()
-                    logger.info("Microphone stream opened successfully.")
-                    reconnect_delay = 1.0  # Reset backoff on success
+                    logger.info("Microphone stream opened successfully for OpenWakeWord.")
+                    reconnect_delay = 1.0
                 except Exception as e:
-                    logger.error(f"Microphone connection failed: {e}. Retrying in {reconnect_delay:.1f}s...")
+                    logger.warning(f"WakeWord microphone connection failed: {e}. Retrying in {reconnect_delay:.1f}s...")
                     stream = None
-                    # Sleep in small slices to remain responsive to stop requests
                     slices = int(reconnect_delay / 0.1)
                     for _ in range(slices):
                         if not self._running:
                             break
                         time.sleep(0.1)
-                    reconnect_delay = min(10.0, reconnect_delay * 1.5)  # exponential backoff
+                    reconnect_delay = min(10.0, reconnect_delay * 1.5)
                     continue
 
             # 2. Process queued audio frames
             try:
-                # Get block from queue
                 try:
                     pcm_frame = audio_queue.get(timeout=0.2)
                 except queue.Empty:
-                    # Check if stream is still active
                     if stream and not stream.active:
-                        logger.warning("Microphone stream became inactive. Initiating recovery.")
+                        logger.warning("WakeWord mic stream became inactive. Reconnecting...")
                         try:
                             stream.stop()
                             stream.close()
@@ -218,39 +271,34 @@ class OpenWakeWordDetector(WakeWordDetector):
                             pass
                         stream = None
                     continue
-                
-                # Append to buffer
+
                 self._audio_buffer = np.append(self._audio_buffer, pcm_frame)
-                
+
                 # Feed chunks of 1280 samples (80ms at 16kHz) to openwakeword
                 while len(self._audio_buffer) >= 1280:
                     chunk = self._audio_buffer[:1280]
                     self._audio_buffer = self._audio_buffer[1280:]
-                    
+
                     # Run model prediction
-                    prediction = oww_model.predict(chunk)
-                    
-                    # Check if target wake word crossed threshold
+                    prediction = self._model.predict(chunk)
+
                     for word, score in prediction.items():
-                        is_match = any(w in word.lower() for w in self.wake_words) or word.lower() == 'jarvis'
+                        is_match = any(w in word.lower() for w in self.wake_words) or ("jarvis" in word.lower())
                         if is_match and score >= self.sensitivity:
                             current_time = time.time()
-                            # Debounce check to prevent multiple triggers
                             if current_time > self._debounce_until:
-                                logger.info(f"Wake word '{word}' detected! Score: {score:.3f}")
-                                self._debounce_until = current_time + 2.0  # block triggers for 2s
+                                logger.info(f"Wake word '{word}' detected! Score: {score:.3f} >= Threshold: {self.sensitivity}")
+                                self._debounce_until = current_time + 2.0  # debounce for 2.0s
                                 if self._callback:
-                                    # Execute callback on dispatcher thread
                                     threading.Thread(
                                         target=self._callback,
                                         args=(word,),
                                         name="WakeWordCallbackDispatcher",
                                         daemon=True
                                     ).start()
-                                    
+
             except Exception as e:
                 logger.error(f"Error in OpenWakeWord execution loop: {e}", exc_info=True)
-                # Force reconnect
                 if stream:
                     try:
                         stream.stop()
@@ -259,7 +307,7 @@ class OpenWakeWordDetector(WakeWordDetector):
                         pass
                     stream = None
                 time.sleep(1.0)
-                
+
         # Cleanup
         if stream:
             try:
@@ -268,14 +316,14 @@ class OpenWakeWordDetector(WakeWordDetector):
             except Exception as e:
                 logger.error(f"Error closing stream on exit: {e}")
             stream = None
-        logger.info("OpenWakeWord background loop stopped.")
+        logger.info("OpenWakeWord background loop stopped cleanly.")
 
 
 class PorcupineWakeWordDetector(WakeWordDetector):
     """Production wrapper for Picovoice Porcupine.
     Requires Picovoice API Key and configured keyword files.
     """
-    
+
     def __init__(self, api_key=None, keywords=None, **kwargs):
         self.api_key = api_key
         self.keywords = keywords or ["jarvis"]
@@ -283,6 +331,28 @@ class PorcupineWakeWordDetector(WakeWordDetector):
         self._callback = None
         self._thread = None
         self._lock = threading.Lock()
+        self._diagnostic = self._check_porcupine_status()
+
+    def _check_porcupine_status(self) -> str:
+        if not self.api_key:
+            return "Porcupine API key missing. Standby mode active."
+        try:
+            import pvporcupine
+            return "Picovoice Porcupine ready."
+        except ImportError:
+            return "pvporcupine package missing. Run `pip install pvporcupine`."
+
+    def is_available(self) -> bool:
+        if not self.api_key:
+            return False
+        try:
+            import pvporcupine
+            return True
+        except ImportError:
+            return False
+
+    def get_diagnostic(self) -> str:
+        return self._diagnostic
 
     def start(self, callback):
         with self._lock:
@@ -291,16 +361,10 @@ class PorcupineWakeWordDetector(WakeWordDetector):
             logger.info("Starting Picovoice Porcupine Detector...")
             self._callback = callback
             self._running = True
-            
-            if not self.api_key:
-                logger.warning("[Porcupine] Picovoice API key is missing. Running in standby-fallback mode.")
-                
-            try:
-                import pvporcupine
-                logger.info("Successfully imported pvporcupine library.")
-            except ImportError:
-                logger.warning("[Porcupine] pvporcupine library is missing. Running in standby-fallback mode.")
-                
+
+            if not self.is_available():
+                logger.warning(f"[Porcupine] {self._diagnostic}. Running in standby-fallback mode.")
+
             self._thread = threading.Thread(target=self._porcupine_loop, name="PorcupineThread", daemon=True)
             self._thread.start()
 
@@ -310,7 +374,7 @@ class PorcupineWakeWordDetector(WakeWordDetector):
                 return
             logger.info("Stopping Picovoice Porcupine Detector.")
             self._running = False
-            
+
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
@@ -332,18 +396,24 @@ class PorcupineWakeWordDetector(WakeWordDetector):
 
 class WakeWordDetectorFactory:
     """Factory builder to instantiate standardized WakeWordDetector subclasses based on configuration."""
-    
+
     @staticmethod
     def create_detector(engine_type: str, **kwargs) -> WakeWordDetector:
-        engine_lower = engine_type.lower().strip()
+        engine_lower = (engine_type or "openwakeword").lower().strip()
         logger.info(f"Factory creating WakeWordDetector of type: '{engine_lower}'")
-        
-        if engine_lower == "mock":
-            return MockWakeWordDetector(**kwargs)
-        elif engine_lower == "openwakeword":
-            return OpenWakeWordDetector(**kwargs)
+
+        if engine_lower == "openwakeword":
+            det = OpenWakeWordDetector(**kwargs)
+            if not det.is_available():
+                logger.warning(f"[WAKE_WORD_DIAGNOSTIC] OpenWakeWord unavailable: {det.get_diagnostic()}")
+            return det
         elif engine_lower == "porcupine":
-            return PorcupineWakeWordDetector(**kwargs)
+            det = PorcupineWakeWordDetector(**kwargs)
+            if not det.is_available():
+                logger.warning(f"[WAKE_WORD_DIAGNOSTIC] Porcupine unavailable: {det.get_diagnostic()}")
+            return det
+        elif engine_lower == "mock":
+            return MockWakeWordDetector(**kwargs)
         else:
-            logger.error(f"Unknown wake word engine type: '{engine_type}'. Falling back to Mock.")
+            logger.warning(f"Unknown wake word engine type: '{engine_type}'. Falling back to MockWakeWordDetector.")
             return MockWakeWordDetector(**kwargs)

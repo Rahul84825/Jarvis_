@@ -54,6 +54,41 @@ class TestWakeWord(unittest.TestCase):
         fallback_det = WakeWordDetectorFactory.create_detector("unknown_engine_type")
         self.assertIsInstance(fallback_det, MockWakeWordDetector)
 
+    def test_openwakeword_real_readiness(self):
+        """Verifies that OpenWakeWordDetector loads models and reports readiness."""
+        try:
+            import openwakeword
+        except ImportError:
+            self.skipTest("openwakeword is not installed in the environment")
+        from core.wakeword import OpenWakeWordDetector
+        det = OpenWakeWordDetector(wake_words=["jarvis"])
+        self.assertTrue(det.is_available())
+        diag = det.get_diagnostic()
+        self.assertIn("OpenWakeWord ready with ONNX models", diag)
+
+    def test_porcupine_diagnostic_reporting(self):
+        """Verifies that Porcupine reports clear diagnostic when API key is missing."""
+        from core.wakeword import PorcupineWakeWordDetector
+        det = PorcupineWakeWordDetector(api_key="")
+        self.assertFalse(det.is_available())
+        self.assertIn("API key missing", det.get_diagnostic())
+
+    def test_openwakeword_prediction_call(self):
+        """Verifies that the loaded ONNX model can perform inference on audio chunk."""
+        try:
+            import openwakeword
+        except ImportError:
+            self.skipTest("openwakeword is not installed in the environment")
+        import numpy as np
+        from core.wakeword import OpenWakeWordDetector
+        det = OpenWakeWordDetector(wake_words=["jarvis"])
+        self.assertTrue(det.is_available())
+        dummy_chunk = np.zeros(1280, dtype=np.int16)
+        pred = det._model.predict(dummy_chunk)
+        self.assertIsInstance(pred, dict)
+        self.assertIn("hey_jarvis", pred)
+
 if __name__ == "__main__":
     unittest.main()
+
 

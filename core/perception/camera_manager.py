@@ -174,6 +174,18 @@ class CameraManager:
         )
 
         if not success:
+            logger.warning(f"Failed to open camera hardware on index {self._selected_camera_index}. Attempting Mock fallback.")
+            from core.perception.camera_device import MockCameraDevice
+            if not isinstance(self.device, MockCameraDevice):
+                self.device = MockCameraDevice()
+                success = self.device.open(
+                    device_index=self._selected_camera_index,
+                    width=self.config.capture_width,
+                    height=self.config.capture_height,
+                    fps=self.config.capture_fps
+                )
+
+        if not success:
             logger.error(f"Failed to open camera hardware on index {self._selected_camera_index}.")
             self._set_state(CameraState.UNAVAILABLE, "Camera hardware unavailable")
             return False

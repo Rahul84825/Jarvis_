@@ -36,6 +36,7 @@ class TTSManager:
         self._interrupt_event = threading.Event()
         self._current_player_stream = None
         self._is_speaking = False
+        self._state = "IDLE"
         self._current_job_id: Optional[str] = None
         self._last_playback_success = False
 
@@ -54,6 +55,7 @@ class TTSManager:
         self.on_start_speaking_cb = None
         self.on_stop_speaking_cb = None
         self.on_audio_amplitude_cb = None
+        self.on_start_synthesizing_cb = None
 
         # On-disk audio cache
         self._cache_dir = Path(".cache/tts")
@@ -71,6 +73,25 @@ class TTSManager:
         except Exception as e:
             logger.debug(f"Could not query default audio output device: {e}")
 
+    def _resolve_output_device(self) -> Optional[int]:
+        target = getattr(config, "audio_output_device", None)
+        if target is None:
+            return None
+        try:
+            target_idx = int(target)
+            devices = sd.query_devices()
+            if 0 <= target_idx < len(devices):
+                dev = devices[target_idx]
+                if dev.get('max_output_channels', 0) > 0:
+                    return target_idx
+        except Exception:
+            pass
+        return None
+
+    @property
+    def state(self) -> str:
+        return self._state
+
     @property
     def provider(self) -> BaseTTS:
         key = getattr(config, "tts_provider", self._active_provider_key).lower()
@@ -85,7 +106,7 @@ class TTSManager:
         else:
             logger.warning(f"Unknown TTS provider '{provider_name}'. Retaining '{self.provider.get_name()}'.")
 
-    def start(self, on_start_speaking=None, on_stop_speaking=None, on_audio_amplitude=None):
+    def start(self, on_start_speaking=None, on_stop_speaking=None, on_audio_amplitude=None, on_start_synthesizing=None):
         """Starts background worker thread."""
         with self._lock:
             if self._running:
@@ -97,6 +118,8 @@ class TTSManager:
                 self.on_stop_speaking_cb = on_stop_speaking
             if on_audio_amplitude is not None:
                 self.on_audio_amplitude_cb = on_audio_amplitude
+            if on_start_synthesizing is not None:
+                self.on_start_synthesizing_cb = on_start_synthesizing
 
             self._running = True
             self._interrupt_event.clear()
@@ -122,16 +145,18 @@ class TTSManager:
         if not text or not text.strip():
             return
 
-        import uuid
-        actual_job_id = job_id or uuid.uuid4().hex[:8]
-
         if interrupt:
             self.interrupt()
 
-        self._current_job_id = actual_job_id
         self._interrupt_event.clear()
-        logger.info(f"[TTS_ENQUEUED][{actual_job_id}] Text: '{text}' (Interrupt={interrupt})")
-        self._queue.put(("text", text, actual_job_id))
+        if job_id:
+            self._current_job_id = job_id
+            logger.info(f"[TTS_ENQUEUED][{job_id}] Text: '{text}' (Interrupt={interrupt})")
+            self._queue.put(("text", text, job_id))
+        else:
+            self._current_job_id = None
+            logger.info(f"[TTS_ENQUEUED] Text: '{text}' (Interrupt={interrupt})")
+            self._queue.put(("text", text))
 
     def play_wav(self, file_path: str, interrupt: bool = True, job_id: Optional[str] = None):
         """Enqueues an audio file for playback."""
@@ -144,11 +169,14 @@ class TTSManager:
         logger.info(f"[TTS_ENQUEUED][{actual_job_id}] Audio file: {file_path}")
         self._queue.put(("file", file_path, actual_job_id))
 
-    def interrupt(self):
+    def interrupt(self, force: bool = True, from_vad: bool = False):
         """Halts active audio output and flushes the queue."""
+        if not force and self._state == "TTS_SYNTHESIZING":
+            return
         logger.info("Speech interruption requested. Clearing queue.")
         self._interrupt_event.set()
         self._current_job_id = None
+        self._state = "IDLE"
 
         try:
             sd.stop()
@@ -260,13 +288,16 @@ class TTSManager:
 
                 try:
                     if item_type == "text":
+                        self._state = "TTS_SYNTHESIZING"
+                        if self.on_start_synthesizing_cb:
+                            self._trigger_callback(self.on_start_synthesizing_cb)
                         logger.info(f"[TTS_SYNTHESIS_STARTED][{item_job_id}] Text: '{payload}'")
                         t0_synth = time.time()
 
                         # Check Cache
                         cache_file = self._get_cache_path(payload)
                         cached_audio_path = None
-                        if cache_file and cache_file.exists() and cache_file.stat().st_size > 500:
+                        if cache_file and cache_file.exists() and cache_file.stat().st_size > 0:
                             cached_audio_path = str(cache_file)
                             synth_ms = (time.time() - t0_synth) * 1000
                             logger.info(f"[TTS_CACHE_HIT][{item_job_id}] Cached audio found in {synth_ms:.1f}ms: {cached_audio_path}")
@@ -309,13 +340,25 @@ class TTSManager:
                         if audio_file_to_play:
                             logger.info(f"[TTS_SYNTHESIS_FINISHED][{item_job_id}] Succeeded in {synth_ms:.1f}ms -> {audio_file_to_play}")
                             if not self._interrupt_event.is_set():
-                                self._last_playback_success = self._play_audio_file(audio_file_to_play, item_job_id, synth_ms=synth_ms)
+                                self._state = "TTS_PLAYING"
+                                self._is_speaking = True
+                                self._trigger_callback(self.on_start_speaking_cb)
+                                if item_job_id:
+                                    self._last_playback_success = self._play_audio_file(audio_file_to_play, item_job_id, synth_ms=synth_ms)
+                                else:
+                                    self._last_playback_success = self._play_audio_file(audio_file_to_play)
                         else:
                             logger.error(f"[TTS_SYNTHESIS_FAILED][{item_job_id}] All TTS providers failed to synthesize audio.")
 
                     elif item_type in ["file", "temp_file"]:
                         temp_file_to_clean = payload if item_type == "temp_file" else None
-                        self._last_playback_success = self._play_audio_file(payload, item_job_id)
+                        self._state = "TTS_PLAYING"
+                        self._is_speaking = True
+                        self._trigger_callback(self.on_start_speaking_cb)
+                        if item_job_id:
+                            self._last_playback_success = self._play_audio_file(payload, item_job_id)
+                        else:
+                            self._last_playback_success = self._play_audio_file(payload)
 
                 except Exception as e:
                     logger.error(f"Error in TTS processing: {e}", exc_info=True)
@@ -323,6 +366,7 @@ class TTSManager:
                     if temp_file_to_clean and (not cache_file or str(cache_file) != temp_file_to_clean):
                         self._delete_file_safely(temp_file_to_clean)
 
+                    self._state = "IDLE"
                     self._is_speaking = False
                     if self._last_playback_success:
                         logger.info(f"[TTS_COMPLETED][{item_job_id}] Speech playback completed successfully.")

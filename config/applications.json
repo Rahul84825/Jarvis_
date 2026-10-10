@@ -2,7 +2,7 @@
     "chrome": {
         "windows": "chrome",
         "linux": "google-chrome",
-        "aliases": ["chrome", "google chrome", "browser", "chrome browser", "web browser"],
+        "aliases": ["chrome", "google chrome", "browser", "chrome browser", "web browser", "the chrome", "google chrome browser"],
         "website": "https://www.google.com/chrome"
     },
     "vscode": {
@@ -94,5 +94,10 @@
         "linux": "nautilus",
         "aliases": ["explorer", "file explorer", "files", "file manager", "my computer", "this pc"],
         "website": null
+    },
+    "camera": {
+        "windows": "microsoft.windows.camera:",
+        "linux": "cheese",
+        "aliases": ["camera", "webcam", "the camera", "windows camera"]
     }
 }

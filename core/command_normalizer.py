@@ -33,7 +33,9 @@ class CommandNormalizer:
             r"\bwould you\b",
             r"\bcan you\b",
             r"\bplease\b",
-            r"\bkindly\b"
+            r"\bkindly\b",
+            r"\bfor me\b",
+            r"\bfor us\b"
         ]
 
         # Conversational filler words
@@ -63,13 +65,17 @@ class CommandNormalizer:
             (r"\b(mute volume|mute audio|mute sound|silence audio)\b", "mute"),
             (r"\b(unmute volume|unmute audio|unmute sound)\b", "unmute"),
 
+            # Developer test commands
+            (r"\b(run the tests|run tests|run project tests|run my tests)\b", "run tests"),
+
             # App launches
-            (r"\b(bring up|launch|run|start|open up|opening)\b", "open"),
+            (r"\b(bring up|launch|start|open up|opening)\b", "open"),
+            (r"\brun\b(?!\s+(?:the\s+)?tests\b)", "open"),
 
             # App name aliases & fuzzy command shortcuts
             (r"\b(visual studio code|vs code|vieskund|vees code|viscode|vies kund|code)\b", "vscode"),
             (r"\bopen vs\b", "open vscode"),
-            (r"\bgoogle chrome|krone|crome|room|cru\b", "chrome"),
+            (r"\b(?:the\s+)?(?:google\s+)?chrome(?:\s+browser)?|krone|crome|room|cru\b", "chrome"),
             (r"\b(you\s+tube|u\s+tube|utube)\b", "youtube"),
             (r"\bspottify\b", "spotify"),
             (r"\bsteem\b", "steam"),
@@ -98,6 +104,31 @@ class CommandNormalizer:
             (r"\bshow screen shot\b", "show screenshots")
         ]
 
+    SEARCH_PREFIX_REGEX = re.compile(
+        r"^\s*(?:(?:hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*(?:jarvis|goliya|buddy)(?:'s)?\s*[,:]?\s*)*(?:\b(?:please|kindly)\b\s*)*\bsearch\b\s*[,:]?\s*(.*)$",
+        re.IGNORECASE | re.DOTALL
+    )
+
+    @classmethod
+    def extract_explicit_search(cls, text: str):
+        """Detects standalone 'search' in prefix position and extracts query.
+        
+        Returns:
+            Tuple[bool, str]: (is_search, extracted_query)
+        """
+        if not text or not isinstance(text, str):
+            return False, ""
+        m = cls.SEARCH_PREFIX_REGEX.match(text)
+        if m:
+            query = (m.group(1) or "").strip()
+            return True, query
+        return False, ""
+
+    @classmethod
+    def is_explicit_search(cls, text: str) -> bool:
+        """Returns True if input text starts with the explicit search command prefix."""
+        return cls.extract_explicit_search(text)[0]
+
     def split_chained_commands(self, text: str) -> list[str]:
         """Splits multi-command natural speech into a sequence of individual command strings using MultiCommandParser.
 
@@ -106,6 +137,9 @@ class CommandNormalizer:
             "Close Calculator and Volume Up" -> ["close calculator", "volume up"]
             "Open Chrome, then open GitHub and increase volume" -> ["open chrome", "open github", "increase volume"]
         """
+        if self.is_explicit_search(text):
+            return [text]
+
         from core.multi_command_parser import multi_command_parser
         raw_commands = multi_command_parser.parse(text)
         result_commands = []
@@ -129,6 +163,18 @@ class CommandNormalizer:
         """
         if not text or not isinstance(text, str):
             return {"normalized": "", "raw": text or "", "removed_words": []}
+
+        # Explicit search shortcut: preserve query's casing, technical terms, and punctuation
+        is_search, extracted_query = self.extract_explicit_search(text)
+        if is_search:
+            normalized_cmd = f"search {extracted_query}".strip()
+            return {
+                "normalized": normalized_cmd,
+                "raw": text,
+                "removed_words": ["jarvis", "search_prefix"],
+                "is_explicit_search": True,
+                "search_query": extracted_query
+            }
 
         original_text = text
         normalized = text.lower().strip()
@@ -195,10 +241,12 @@ class CommandNormalizer:
                 dedup_words.append(cleaned_word)
 
         final_normalized = " ".join(dedup_words).strip()
+        final_normalized = re.sub(r"\s*[\.\,\?\!]+$", "", final_normalized).strip()
         
         # If stripping wake words emptied a standalone greeting (e.g. "Namaste Goliya", "Hey buddy"), preserve greeting token
         if not final_normalized and original_text:
             clean_raw = original_text.lower().replace("goliya", "").replace("jarvis", "").strip()
+            clean_raw = re.sub(r"\s*[\.\,\?\!]+$", "", clean_raw).strip()
             final_normalized = clean_raw if clean_raw else original_text.lower().strip()
 
         logger.debug(f"Normalized: '{original_text}' -> '{final_normalized}' (Removed: {removed})")

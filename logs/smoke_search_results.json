@@ -1,0 +1,93 @@
+[
+  {
+    "test_id": 1,
+    "raw_input": "Jarvis search latest AI news",
+    "transcribed_input": "Jarvis search latest AI news (Text Pipeline)",
+    "normalized_input": "search latest AI news",
+    "detected_intent": "web_search",
+    "extracted_query": "latest AI news",
+    "selected_provider_tool": "BrowserManager.search (google)",
+    "provider_invoked": true,
+    "results_received": true,
+    "final_response": "Searching Google.",
+    "reached_local_fallback": false
+  },
+  {
+    "test_id": 2,
+    "raw_input": "Jarvis search what is quantum computing",
+    "transcribed_input": "Jarvis search what is quantum computing (Text Pipeline)",
+    "normalized_input": "search what is quantum computing",
+    "detected_intent": "web_search",
+    "extracted_query": "what is quantum computing",
+    "selected_provider_tool": "BrowserManager.search (google)",
+    "provider_invoked": true,
+    "results_received": true,
+    "final_response": "Searching Google.",
+    "reached_local_fallback": false
+  },
+  {
+    "test_id": 3,
+    "raw_input": "Jarvis search official React documentation",
+    "transcribed_input": "Jarvis search official React documentation (Text Pipeline)",
+    "normalized_input": "search official React documentation",
+    "detected_intent": "web_search",
+    "extracted_query": "official React documentation",
+    "selected_provider_tool": "BrowserManager.search (google)",
+    "provider_invoked": true,
+    "results_received": true,
+    "final_response": "Searching Google.",
+    "reached_local_fallback": false
+  },
+  {
+    "test_id": 4,
+    "raw_input": "Jarvis search",
+    "transcribed_input": "Jarvis search (Text Pipeline)",
+    "normalized_input": "search",
+    "detected_intent": "web_search",
+    "extracted_query": "",
+    "selected_provider_tool": "Clarification Handler (Empty Query)",
+    "provider_invoked": false,
+    "results_received": true,
+    "final_response": "What would you like me to search for, Sir?",
+    "reached_local_fallback": false
+  },
+  {
+    "test_id": 5,
+    "raw_input": "Manual execution with unconfigured provider",
+    "transcribed_input": "N/A (Direct Intent Node)",
+    "normalized_input": "search Python 3.14",
+    "detected_intent": "web_search",
+    "extracted_query": "Python 3.14",
+    "selected_provider_tool": "BrowserManager.search (unconfigured_engine)",
+    "provider_invoked": false,
+    "results_received": false,
+    "final_response": "Search provider 'unconfigured_engine' is not configured.",
+    "reached_local_fallback": false
+  },
+  {
+    "test_id": 6,
+    "raw_input": "Search with browser unavailable",
+    "transcribed_input": "N/A (Controlled Test)",
+    "normalized_input": "search Python",
+    "detected_intent": "web_search",
+    "extracted_query": "Python",
+    "selected_provider_tool": "BrowserManager.search (google)",
+    "provider_invoked": false,
+    "results_received": false,
+    "final_response": "No supported browser found.",
+    "reached_local_fallback": false
+  },
+  {
+    "test_id": 7,
+    "raw_input": "Synthesized voice: 'Jarvis search latest AI news'",
+    "transcribed_input": "Whisper Transcribed: 'Jarvis search latest AINUS.'",
+    "normalized_input": "search latest AINUS.",
+    "detected_intent": "web_search",
+    "extracted_query": "latest AINUS.",
+    "selected_provider_tool": "BrowserManager.search (google)",
+    "provider_invoked": true,
+    "results_received": true,
+    "final_response": "Searching Google.",
+    "reached_local_fallback": false
+  }
+]

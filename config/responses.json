@@ -115,5 +115,8 @@
   ],
   "unknown": [
     "I'm not sure how to help with that yet, but I can open apps, websites, control volume, or take screenshots."
+  ],
+  "no_provider_fallback": [
+    "I'm not sure how to help with that yet."
   ]
 }
