@@ -329,7 +329,6 @@ class IntentEngine:
         # -------------------------------------------------------------
         # 4. IDENTITY, HELP & ABOUT INTENTS
         # -------------------------------------------------------------
-        # -------------------------------------------------------------
         identity_queries = [
             "who are you", "who made you", "who built you", "who created you", 
             "who developed you", "who owns you", "who is your developer", 
@@ -338,16 +337,58 @@ class IntentEngine:
         if any(iq in clean for iq in identity_queries):
             return {"intent": "identity", "action": "explain_identity", "target": None, "confidence": 0.98, "query": clean, "raw_text": raw_text}
 
+        raw_lower = raw_text.lower().strip('?!. ')
+
+        # Scoped help / capability discovery
+        scoped_patterns = [
+            (r"^(?:list|show|what\s+are(?:\s+the)?)\s+(browser|chrome|web)\s+commands", "browser"),
+            (r"^what\s+(browser|chrome|web)\s+commands\s+(?:can\s+you\s+perform|do\s+you\s+know|are\s+there)", "browser"),
+            (r"^(?:list|show|what\s+are(?:\s+the)?)\s+(file|folder|filesystem)\s+(?:commands|operations)", "filesystem"),
+            (r"^what\s+(file|folder|filesystem)\s+(?:operations|commands)\s+(?:can\s+you\s+perform|do\s+you\s+know|are\s+there)", "filesystem"),
+            (r"^(?:list|show|what\s+are(?:\s+the)?)\s+(application|app)\s+commands", "applications"),
+            (r"^(?:list|show|what\s+are(?:\s+the)?)\s+(system|os|computer)\s+commands", "system"),
+            (r"^(?:list|show|what\s+are(?:\s+the)?)\s+search\s+commands", "search"),
+            (r"^(?:list|show|what\s+are(?:\s+the)?)\s+(developer|dev|code)\s+commands", "developer"),
+        ]
+        for spat, sc in scoped_patterns:
+            if re.search(spat, clean) or re.search(spat, raw_lower):
+                return {
+                    "intent": "help",
+                    "action": "show_scoped_commands",
+                    "scope": sc,
+                    "target": sc,
+                    "confidence": 0.98,
+                    "query": clean,
+                    "raw_text": raw_text
+                }
+
+        # Show all commands reference
+        if any(re.search(pat, clean) or re.search(pat, raw_lower) for pat in [
+            r"^(?:show|list)\s+all\s+commands",
+            r"^all\s+commands$",
+            r"^(?:show|list)\s+every\s+command",
+            r"^full\s+command\s+(?:list|reference)"
+        ]):
+            return {
+                "intent": "help",
+                "action": "show_all_commands",
+                "scope": "all",
+                "target": "all",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
         help_queries = [
             "help", "help me", "what can you do", "what can jarvis do", "what do you do", "what do",
             "what are your capabilities", "what commands do you know", "show commands", 
             "commands", "capabilities", "show capabilities", "show me your capabilities",
-            "what are your features", "how can you help me", "how can you help"
+            "what are your features", "how can you help me", "how can you help",
+            "list commands", "list capabilities"
         ]
-        raw_lower = raw_text.lower().strip('?!. ')
         is_action_request = any(clean.startswith(f"help me {v}") or raw_lower.startswith(f"help me {v}") for v in ["open", "launch", "start", "close", "find", "search", "run", "play"])
         if not is_action_request and (clean in help_queries or raw_lower in help_queries or any(clean == hq or clean.startswith(hq + " ") or raw_lower == hq or raw_lower.startswith(hq + " ") for hq in help_queries)):
-            return {"intent": "help", "action": "show_help", "target": None, "confidence": 0.98, "query": clean, "raw_text": raw_text}
+            return {"intent": "help", "action": "show_help", "target": None, "scope": "overview", "confidence": 0.98, "query": clean, "raw_text": raw_text}
 
         about_queries = [
             "about", "about goliya", "about jarvis", "version", 
@@ -704,6 +745,9 @@ class IntentEngine:
         # -------------------------------------------------------------
         # 17. CLOSE APP INTENTS
         # -------------------------------------------------------------
+        if re.match(r"^(?:close|shut)\s+(?:the\s+)?(?:active\s+|current\s+)?(?:chrome\s+)?tab$", clean, re.IGNORECASE):
+            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
         close_patterns = [
             r"^(?:close|exit|quit|stop|shut\s*down|shut|terminate|end|kill|get\s+rid\s+of)\s+(?:the\s+|my\s+)?(.+)$",
             r"^get\s+(?:the\s+|my\s+)?(.+?)\s+out\s+of\s+here$",
@@ -801,6 +845,57 @@ class IntentEngine:
         # -------------------------------------------------------------
         # 19. OPEN APP & OPEN WEBSITE INTENTS
         # -------------------------------------------------------------
+        # Open specific website in specific browser: e.g. "open ChatGPT in Chrome", "open YouTube in Chrome"
+        browser_site_m = re.match(r"^(?:open|launch|navigate\s+to|go\s+to)\s+(.+?)\s+(?:in|on)\s+(chrome|edge|firefox|browser)$", clean, re.IGNORECASE)
+        if browser_site_m:
+            raw_site = browser_site_m.group(1).strip()
+            raw_browser = browser_site_m.group(2).strip().lower()
+            if raw_browser == "browser":
+                raw_browser = "chrome"
+            site_key = raw_site.lower()
+            site_url = web_control.links.get(site_key)
+            if not site_url and (site_key.startswith("http://") or site_key.startswith("https://") or ("." in site_key and " " not in site_key)):
+                site_url = f"https://{site_key}" if not site_key.startswith("http") else site_key
+            if not site_url:
+                res_target = application_resolver.resolve(raw_site)
+                if res_target.url:
+                    site_url = res_target.url
+            if not site_url:
+                site_url = f"https://{site_key}.com"
+
+            return {
+                "intent": "open_website",
+                "action": "open_in_browser",
+                "target": raw_site,
+                "url": site_url,
+                "browser": raw_browser,
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": effective_raw
+            }
+
+        # Browser Tab & Page Navigation Keywords
+        if re.match(r"^(?:open\s+(?:a\s+)?)?new\s+(?:chrome\s+)?tab$", clean, re.IGNORECASE):
+            return {"intent": "browser_tab_control", "action": "new_tab", "target": "chrome", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        if re.match(r"^(?:close|shut)\s+(?:the\s+)?(?:active\s+|current\s+)?(?:chrome\s+)?tab$", clean, re.IGNORECASE):
+            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        if re.match(r"^(?:switch|next)\s+tab$", clean, re.IGNORECASE):
+            return {"intent": "browser_tab_control", "action": "next_tab", "target": "chrome", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        if re.match(r"^(?:go\s+)?back(?:\s+in\s+chrome)?$", clean, re.IGNORECASE):
+            return {"intent": "browser_tab_control", "action": "go_back", "target": "chrome", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        if re.match(r"^(?:go\s+)?forward(?:\s+in\s+chrome)?$", clean, re.IGNORECASE):
+            return {"intent": "browser_tab_control", "action": "go_forward", "target": "chrome", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        if re.match(r"^(?:refresh|reload)(?:\s+(?:the\s+)?(?:current\s+)?page)?$", clean, re.IGNORECASE):
+            return {"intent": "browser_tab_control", "action": "reload_page", "target": "chrome", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        if re.match(r"^read\s+(?:the\s+)?(?:current\s+)?(?:web)?page$", clean, re.IGNORECASE):
+            return {"intent": "browser_action", "action": "read_page", "target": "current_page", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
         open_patterns = [
             r"^(?:open|launch|start|run|begin|bring\s+up|fire\s+up|load|get\s+up|use|i\s+want\s+to\s+use|help\s+me\s+open|start\s+up)\s+(?:the\s+|my\s+)?(.+)$",
             r"^bring\s+(?:the\s+|my\s+)?(.+?)\s+up$",

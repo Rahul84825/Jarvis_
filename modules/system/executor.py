@@ -110,12 +110,28 @@ class CommandExecutor:
                 message = res["message"]
 
             elif intent == "open_website":
-                success, message = web_control.open_website(target)
-                if not success:
-                    outcome = CommandOutcome.EXECUTION_FAILED
-                    message = "I couldn't open that website, Sir."
+                browser_name = intent_node.get("browser")
+                url = intent_node.get("url")
+                if browser_name:
+                    if not url:
+                        url = web_control.links.get(target.lower(), f"https://{target}")
+                    res = self.browser_mgr.open_browser(browser_name=browser_name, url=url)
+                    success = res.get("success", False)
+                    site_display = target.title() if target else "website"
+                    browser_display = browser_name.title()
+                    if success:
+                        outcome = CommandOutcome.SUCCESS
+                        message = f"Opening {site_display} in {browser_display}."
+                    else:
+                        outcome = CommandOutcome.EXECUTION_FAILED
+                        message = res.get("message", f"I couldn't open {site_display} in {browser_display}.")
                 else:
-                    outcome = CommandOutcome.SUCCESS
+                    success, message = web_control.open_website(target)
+                    if not success:
+                        outcome = CommandOutcome.EXECUTION_FAILED
+                        message = "I couldn't open that website, Sir."
+                    else:
+                        outcome = CommandOutcome.SUCCESS
 
             elif intent == "web_search":
                 provider = intent_node.get("provider", "google")
@@ -438,8 +454,18 @@ class CommandExecutor:
                     success = False
                     message = f"Unknown filesystem action: {action}"
 
-            elif intent == "browser_control":
+            elif intent in ["browser_control", "browser_tab_control"]:
                 success, message = self._handle_browser_control(action, target, intent_node)
+
+            elif intent == "browser_action":
+                if action in ["read_page", "inspect_page"]:
+                    res = self.browser_mgr.inspect_page()
+                    success = res.get("success", False)
+                    message = res.get("message") or ("Page inspected successfully." if success else "DOM inspection requires Chrome DevTools Protocol (CDP). Launch Chrome with '--remote-debugging-port=9222' on localhost to enable page reading.")
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.UNSUPPORTED_CAPABILITY
+                else:
+                    success = False
+                    message = f"Unknown browser action: {action}"
 
             elif intent == "youtube_control":
                 res = self.browser_mgr.youtube_control(action, target)
@@ -547,8 +573,15 @@ class CommandExecutor:
 
             elif intent == "help":
                 success = True
-                from core.tool_registry import tool_registry
-                message = tool_registry.get_capabilities_summary()
+                from core.capability_service import capability_service
+                scope = intent_node.get("scope") or intent_node.get("target") or "overview"
+                if scope == "all" or action == "show_all_commands":
+                    message = capability_service.get_all_commands_reference()
+                elif scope in ["browser", "filesystem", "applications", "system", "search", "developer", "content", "media", "custom"]:
+                    message = capability_service.get_scoped_commands(scope)
+                else:
+                    from core.tool_registry import tool_registry
+                    message = tool_registry.get_capabilities_summary()
 
             elif intent == "about":
                 success = True

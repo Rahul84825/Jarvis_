@@ -167,8 +167,15 @@ class CommandResponseRegistry:
             return f"{app_name} is closed, Sir."
 
         if intent == "open_website":
+            if evidence_msg and ("opening " in evidence_msg.lower() or "opened " in evidence_msg.lower()):
+                return evidence_msg
             site_name = clean_target or "Website"
             return f"{site_name} is open, Sir."
+
+        if intent == "help":
+            if evidence_msg:
+                return evidence_msg
+            return "Here are my supported capabilities, Sir."
 
         if intent == "web_search":
             if evidence_msg and "searching " in evidence_msg.lower():

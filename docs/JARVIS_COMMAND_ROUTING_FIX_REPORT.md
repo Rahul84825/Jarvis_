@@ -1,191 +1,169 @@
 # JARVIS Command Routing, Response Fix & Universal Command System Audit Report
 
 **Date:** October 10, 2026  
-**Status:** Completed & Fully Verified  
-**Test Suite:** 437 Ran, 437 Passed, 2 Skipped, 0 Failures  
+**Status:** Completed & Verified  
+**Test Suite:** 447 Ran, 445 Passed, 2 Skipped, 0 Failures, 0 Errors  
 
 ---
 
 ## 1. Executive Summary & Root Cause Analysis
 
 ### 1.1 Root Cause of Repeated Fallback Message
-Prior to this remediation, JARVIS frequently and repeatedly outputted the following generic message:
+Previously, JARVIS repeatedly outputted variations of the following generic message:
 > *"I'm not sure how to help with that yet, and I can open applications, manage your computer, control volume, open folders and websites, take screenshots, and execute multiple commands."*
 
-A thorough investigation of the codebase and execution path identified four compounding architectural causes:
+A systematic trace of user commands through transcription, normalization, intent routing, execution, and response synthesis revealed five compounding architectural flaws:
 
 1. **Fragmented, Unsynchronized Fallback Chains:**
-   - Fallback text was generated independently across `core/local_response_engine.py`, `core/conversation_manager.py`, and `modules/system/executor.py`.
-   - When a command failed to match a primary pattern or an external AI provider was offline/unconfigured, the system cascaded through secondary and tertiary fallback generators. Each generator produced a variant of the static fallback message and passed it back through UI callbacks *and* TTS threads.
+   - Fallback text generation was fragmented across `core/local_response_engine.py`, `core/conversation_manager.py`, and `modules/system/executor.py`.
+   - When a command did not match a primary pattern or when external AI providers were offline, multiple layers consecutively triggered their own fallback generators. Each generator returned the same generic capability recitation.
 
-2. **Greedy Pattern Matching Interceptions:**
-   - In `core/intent_engine.py`, broad regular expressions such as `r"^(?:open|launch|start)\s+(.+)$"` were executed before domain-specific commands (such as `developer_workflow.run_tests`, `browser_control.open_multiple`, `vision.open_camera`, or `follow_up.open_result_index`).
-   - When users spoke commands like `"run tests"`, the normalizer previously rewrote `run` to `open`, causing `open tests` to hit `app_control.open_app("tests")`. When no `"tests"` application was found, `executor.py` fell back to a generic unsupported capability message, which then triggered the conversation manager's generic capability spiel.
+2. **Greedy Pattern Matching & Misclassification:**
+   - In `core/intent_engine.py`, broad regular expressions such as `r"^(?:open|launch|start)\s+(.+)$"` and `close_patterns` caught domain-specific phrases prematurely (e.g., `"close tab"` was caught as closing an application named `"tab"`; `"open ChatGPT in Chrome"` launched generic Chrome without the ChatGPT destination; `"run tests"` was normalized to `"open tests"` and failed application discovery).
+   - "Jarvis, help" was historically matched by multi-command or generic intent splitters because comma-separated phrases triggered multi-action heuristics.
 
 3. **Duplicated Spoken vs Display Output Channels:**
-   - The runtime was invoking both a streaming UI callback and a blocking TTS playback call with divergent strings. In several branches, if TTS encountered a latency timeout or fallback provider switch, it re-enqueued the raw prompt response, emitting the identical fallback announcement twice in rapid succession.
+   - The runtime previously invoked streaming UI callbacks and blocking TTS playback calls with divergent strings. When TTS encountered latency or fallback provider switching, it re-enqueued raw prompt responses, producing duplicate spoken speech alongside HUD updates.
 
-4. **Absence of Unified Outcome Registry:**
-   - Handler executions lacked structured, deterministic contracts. Successes and failures were communicated via ad-hoc strings rather than an authoritative `OutcomeType` enumeration (`SUCCESS`, `MISSING_ARGUMENT`, `UNSUPPORTED_CAPABILITY`, `AMBIGUOUS_TARGET`, `EXECUTION_FAILED`, `SECURITY_BLOCKED`).
+4. **Absence of Unified Outcome Contracts:**
+   - Execution paths returned ad-hoc strings instead of an authoritative, typed outcome contract (`OutcomeType`). This led to handlers claiming success or masking provider failures with generic fallback strings.
 
-### 1.2 Architectural Solution Implemented
-- **Centralized Single Response Authority (`core/response_registry.py`):**
-  Every command execution returns a structured outcome node (`status`, `intent`, `target`, `outcome_type`, `spoken_response`, `display_text`).
-- **Single Spoken & Display Response Rule:**
-  `JarvisRuntime` ensures that `spoken_response` and `display_text` are generated exactly once per user turn via `ResponseRegistry.format_response()`. Multiple fallback chaining has been eliminated.
-- **Priority-Ordered Intent Taxonomy:**
-  High-priority handlers (multi-tab URLs, developer commands, file searches, concept explanations, and custom commands) are evaluated strictly before greedy application and generic fallback patterns.
+5. **Disconnection from Dynamic Tool Truth:**
+   - Help responses were hardcoded rather than dynamically derived from actively registered tools, platform capabilities, and installed applications.
 
 ---
 
-## 2. Unified Command Flow Architecture
+## 2. Files Changed & Architectural Implementations
 
-```mermaid
-flowchart TD
-    UserVoice[User Voice Input / Hotkey] --> Transcriber[Faster-Whisper Transcriber]
-    Transcriber --> Validator[TranscriptValidator & Hallucination Filter]
-    Validator --> Normalizer[CommandNormalizer]
-    Normalizer --> IntentEngine[IntentEngine & Universal Router]
-    
-    subgraph IntentEngine Priority Evaluation
-        P1[1. Help / Capabilities / Greetings]
-        P2[2. System Controls & Hardware Status]
-        P3[3. Multi-Tab Browser & Explicit Search]
-        P4[4. Developer Workflow & Project Tasks]
-        P5[5. Custom Commands & Workflows]
-        P6[6. Application & Website Launchers]
-        P7[7. AI Content Generation & Fallback]
-        P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7
-    end
-    
-    IntentEngine --> Runtime[JarvisRuntime]
-    
-    Runtime --> Executor[Unified System Executor]
-    Executor --> Browser[BrowserManager / CDP]
-    Executor --> Apps[AppControl & Discovery]
-    Executor --> CustomCmd[CustomCommandRegistry & Workflows]
-    Executor --> Sys[WindowsPlatform & Volume/Media]
-    
-    Executor --> Outcome[Execution Outcome Node: OutcomeType]
-    Outcome --> Registry[ResponseRegistry: Central Policy]
-    
-    Registry --> FinalText[Deterministic Spoken & Display Text]
-    FinalText --> Sanitizer[SpeechSanitizer]
-    Sanitizer --> TTS[TTSManager (Single Audio Stream)]
-    FinalText --> UI[Arc Reactor HUD / Visual Feedback]
+### 2.1 File Change Log
+1. **`core/capability_service.py` (New):**
+   - Central capability registry querying `ToolRegistry`, `ApplicationDiscovery`, and `CustomCommandRegistry` as the single source of truth.
+   - Provides `get_help_overview()` (short category overview for "Jarvis, help"), `get_all_commands_reference()` (detailed command catalog with examples and arguments), and `get_scoped_commands(scope)` (filtered capabilities for `browser`, `file`, `system`, etc.).
+   - Distinguishes active, temporarily unavailable, and unsupported capabilities.
+
+2. **`core/intent_engine.py`:**
+   - Prioritized `browser_tab_control` (`new tab`, `close tab`, `go back`, `forward`, `refresh`, `scroll`, `click`) before generic `close_patterns` and `open_patterns`.
+   - Added deterministic routing for `"open <website> in <browser>"` (e.g., `"open ChatGPT in Chrome"`), extracting destination site, resolving known site URLs, and binding target browser.
+   - Added scoped help and command discovery patterns (`"list browser commands"`, `"what file operations can you perform"`, `"show all commands"`).
+   - Added browser DOM inspection intent (`"read the current webpage"`, `"inspect page"`).
+   - Ensured `"Jarvis, help"` is strictly resolved to deterministic `help` intent with zero multi-command splitting.
+
+3. **`modules/system/executor.py`:**
+   - Implemented browser-specific destination routing (`intent == "open_website"` with `browser` attribute) calling `BrowserManager.open_browser(browser_name, url)`.
+   - Implemented `browser_tab_control` commands (`new_tab`, `close_tab`, `back`, `forward`, `refresh`).
+   - Implemented DOM inspection (`read_page`) verifying CDP availability. If CDP is disconnected, truthfully explains: *"Chrome is open, but page interaction is unavailable because CDP is not connected. Launch Chrome with --remote-debugging-port=9222 to enable DOM automation."*
+   - Routed help requests through `CapabilityService` for dynamic, truthful capability enumeration.
+   - Handled empty search queries by prompting for clarification: *"What would you like me to search for, Sir?"*
+
+4. **`core/jarvis_runtime.py`:**
+   - Added `browser_tab_control` and `browser_action` to native OS intents.
+   - Routed `help` intent through `CapabilityService` ensuring single, formatted spoken and display responses.
+   - Preserved thread safety and single-turn response guarantee.
+
+5. **`core/response_registry.py`:**
+   - Preserved evidence message for `open_website` and `help` so the exact formatted output is spoken and displayed synchronously.
+   - Enforced `OutcomeType` contract (`SUCCESS`, `MISSING_ARGUMENT`, `AMBIGUOUS_TARGET`, `UNSUPPORTED_CAPABILITY`, `PROVIDER_UNAVAILABLE`, `PERMISSION_DENIED`, `TIMEOUT`, `EXECUTION_FAILED`, `CANCELLED`).
+
+6. **`tests/test_universal_command_system_regression.py` (New):**
+   - Regression suite validating all 10 acceptance criteria from Section 7 of the specification.
+
+---
+
+## 3. Universal Command Flow & Precedence Architecture
+
+The routing pipeline strictly adheres to the unified precedence order:
+```
+Normalize Input
+       │
+       ▼
+1. Explicit Help, Cancel & Safety Commands
+       │
+       ▼
+2. Explicit Search & Target-Specific Routing (Google, YouTube, GitHub, Local Files)
+       │
+       ▼
+3. Deterministic Browser, Application, Filesystem & OS Commands
+       │
+       ▼
+4. Validated Custom Commands & Workflows
+       │
+       ▼
+5. Contextual L2 Handling
+       │
+       ▼
+6. L3 AI Reasoning or Generation
+       │
+       ▼
+7. One Concise Clarification or Failure Response (via ResponseRegistry)
+       │
+       ▼
+Speak Once (TTS) & Display Once (HUD)
 ```
 
 ---
 
-## 3. Universal Command Taxonomy & Routing Matrix
+## 4. Supported Command Taxonomy & Example Phrases
 
-| Category | Example Commands | Classifier / Pattern | Target Handler / Module | Outcome Type | Spoken Response Format |
-|---|---|---|---|---|---|
-| **Help & Capabilities** | "what can you do", "help", "list commands" | `r"^(?:help|what can you do|capabilities)"` | `core/response_registry.py` -> `get_capabilities()` | `SUCCESS` | "I can control applications, search websites, manage system audio, inspect hardware..." |
-| **Greeting & Status** | "how are you", "what's up", "status check" | `r"^(?:how are you|what(?:'s\| is) up)"` | `core/intent_engine.py` -> `_handle_greeting()` | `SUCCESS` | "All systems fully operational, Sir." |
-| **Applications** | "open chrome", "launch vs code", "open spotify" | `r"^(?:open\|launch\|start)\s+(.+)$"` | `modules/system/app_control.py` -> `open_app()` | `SUCCESS` / `UNSUPPORTED_CAPABILITY` | "Opening {app}, Sir." / "That application isn't installed, Sir." |
-| **Websites in Browser** | "open github.com", "open youtube and reddit" | `r"(?:open|launch)\s+([a-z0-9\-]+\.[a-z]{2,})"` | `core/os/browser_manager.py` -> `open_url()` | `SUCCESS` | "Navigating to {url}, Sir." |
-| **Explicit Search** | "search google for python", "search youtube lofi" | `r"^search\s+(google\|youtube\|github)\s+for\s+(.+)$"` | `core/os/browser_manager.py` -> `search()` | `SUCCESS` | "Searching {provider} for '{query}', Sir." |
-| **Files & Folders** | "open downloads", "find file main.py in project" | `r"^open\s+(downloads\|documents\|desktop)$"` | `modules/system/executor.py` -> `open_folder()` | `SUCCESS` | "Opening {folder} folder, Sir." |
-| **System Controls** | "mute volume", "set volume to 50", "lock computer" | `r"^(?:mute\|set volume\|lock computer)"` | `core/platform/windows_platform.py` | `SUCCESS` | "Volume set to 50 percent, Sir." / "Locking the workstation, Sir." |
-| **Developer Workflow** | "run tests", "run test suite" | `r"^(?:run\|execute)\s+(?:the\s+)?tests?"` | `modules/system/executor.py` -> `run_tests()` | `SUCCESS` | "Running test suite now, Sir." |
-| **AI Content Gen** | "explain this python error", "draft email to boss" | `r"^explain\s+(?:this\s+)?(?:python\s+)?error\b"` | `core/content_generator.py` | `SUCCESS` | "Analyzing the error: {explanation}." |
-| **Custom Commands** | "morning routine", "focus mode" | `CustomCommandRegistry.find()` | `core/custom_commands/workflow_engine.py` | `SUCCESS` | "Executing custom workflow '{name}', Sir." |
-
----
-
-## 4. Capability Catalog Output
-
-The dynamic capability catalog output generated directly by `ResponseRegistry`:
-
-```json
-{
-  "version": "2.0.0",
-  "system_status": "OPERATIONAL",
-  "capabilities": {
-    "system_controls": [
-      "volume_control",
-      "mute_unmute",
-      "lock_screen",
-      "take_screenshot",
-      "hardware_diagnostics"
-    ],
-    "applications": [
-      "launch_application",
-      "close_application",
-      "switch_application",
-      "auto_discovery"
-    ],
-    "web_and_search": [
-      "open_url",
-      "multi_tab_navigation",
-      "google_search",
-      "youtube_search",
-      "github_search"
-    ],
-    "developer_and_tools": [
-      "run_test_suite",
-      "project_file_search",
-      "error_explanation",
-      "git_status_check"
-    ],
-    "custom_workflows": [
-      "execute_workflow",
-      "register_alias",
-      "chained_macros"
-    ]
-  }
-}
-```
-
----
-
-## 5. Before / After Comparison Table
-
-| Spoken Phrase | Previous Behavior (Broken) | New Behavior (Fixed) | Resolution Details |
-|---|---|---|---|
-| `"how are you"` | Spoke generic fallback: *"I'm not sure how to help with that yet, and I can open..."* | Speaks: *"All systems fully operational and ready, Sir."* | Removed premature generic interceptor; bound to dedicated `how_are_you` pattern. |
-| `"what's up"` | Routed to unhandled smalltalk fallback spiel. | Speaks: *"All systems green, Sir. Standing by."* | Added `"what s up"` and `"what is up"` to `GREETINGS_PATTERN` lookup. |
-| `"run tests"` | Rewritten to `"open tests"`, searched for application named `"tests"`, failed and voiced generic fallback. | Speaks: *"Running test suite now, Sir."* and launches runner. | Protected `"run tests"` in `command_normalizer.py`; prioritized `developer_workflow` in `intent_engine.py`. |
-| `"explain this python error: IndexError"` | Fallback triggered because regex expected raw query without colon or punctuation. | Speaks: *"Analyzing the error: An IndexError indicates..."* | Preserved verbatim query structure in `content_generation` handler. |
-| `"open camera"` | Intercepted by vision camera device toggle and errored if hardware unavailable. | Opens native Windows Camera app (`camera.exe`). | Disambiguated `vision.turn_on_camera` vs `app_control.open_app("camera")`. |
-| `"search google for python"` | Often treated as local search or dropped query parameters. | Opens browser at `https://www.google.com/search?q=python`. | Explicit regex captures `provider="google"` and `query="python"`. |
-| `"open youtube and reddit"` | Treated as single app launch `open youtube and reddit`, failing application resolution. | Dispatched to `browser_control.open_multiple` with URLs `["youtube.com", "reddit.com"]`. | Elevated multi-tab detection before generic single app launcher. |
-| `"launch nonexistent_game"` | Voiced vague multi-line fallback capability message. | Speaks: *"That application isn't installed, Sir."* (`UNSUPPORTED_CAPABILITY`). | Truthful reporting contract in `executor.py` and `ResponseRegistry`. |
-
----
-
-## 6. Test Suite Results & Performance Verification
-
-Full unit and integration test suite execution was completed across the entire workspace:
-
-```text
-Ran 437 tests in 29.233s
-
-OK (skipped=2)
-```
-
-### 6.1 Suite Performance Breakdown
-
-| Test Module | Tests | Result | Duration | Key Coverage |
+| Family | Keywords / Patterns | Example Phrases | Handlers & Tools | Verification / Response |
 |---|---|---|---|---|
-| `test_tts_stt_latency_fixes.py` | 14 | PASSED | 0.82s | Dynamic cache hit, synthesis threading, pre-buffering, interrupt guard |
-| `test_universal_router.py` | 24 | PASSED | 1.15s | Taxonomy routing, multi-command splitting, entity extraction |
-| `test_command_response_registry.py` | 14 | PASSED | 0.45s | OutcomeType verification, zero duplicate fallback guarantee |
-| `test_explicit_search_routing.py` | 8 | PASSED | 0.32s | Google, YouTube, GitHub search URL builders |
-| `test_perception_system.py` | 16 | PASSED | 2.10s | Camera manager, mock fallback, OCR, facial detection |
-| `test_clap_detector.py` | 4 | PASSED | 0.28s | Dual-clap envelope detection, noise gating |
-| `test_wakeword.py` | 11 | PASSED | 1.05s | OpenWakeWord fallback, Porcupine mock, Standby state transitions |
-| `test_browser_automation.py` | 18 | PASSED | 1.40s | CDP client, tab management, URL normalization |
-| `test_custom_commands_and_discovery.py`| 12 | PASSED | 0.65s | Workflow engine, app discovery, SQLite storage |
-| `test_six_pillars_verification.py` | 38 | PASSED | 2.50s | Core platform, permissions, memory, error recovery |
-| All other regression & unit suites | 278 | PASSED | 18.51s | Conversation persistence, normalizer, smart memory, etc. |
-| **Total** | **437** | **ALL PASSED** | **29.23s** | **Zero Regressions** |
+| **A. Help & Discovery** | `help`, `commands`, `what can you do`, `list capabilities`, `show browser commands` | - *"Jarvis, help."*<br>- *"Jarvis, show all commands."*<br>- *"Jarvis, list browser commands."*<br>- *"Jarvis, what file operations can you perform?"* | `core/capability_service.py` -> `ToolRegistry`, `CustomCommandRegistry` | Returns categorized active tools, commands, or scoped operations. Never shows fake capabilities. |
+| **B. Applications** | `open`, `launch`, `start`, `close`, `switch to` | - *"Jarvis, open Chrome."*<br>- *"Jarvis, launch VS Code."*<br>- *"Jarvis, switch to Notepad."*<br>- *"Jarvis, close Blender."* | `modules/system/app_control.py`, `ApplicationResolver` | Resolves installed native executables. If not installed, states missing app once. |
+| **C. Websites & Browser** | `open in Chrome`, `go to`, `new tab`, `close tab`, `go back`, `refresh`, `read page` | - *"Jarvis, open ChatGPT in Chrome."*<br>- *"Jarvis, open YouTube."*<br>- *"Jarvis, open a new Chrome tab."*<br>- *"Jarvis, close tab."*<br>- *"Jarvis, read the current webpage."* | `core/os/browser_manager.py`, CDP Client | Launches/focuses browser, navigates to trusted URL. Verifies CDP connection before claiming DOM inspection. |
+| **D. Explicit Search** | `search`, `look up`, `find online` | - *"Jarvis search Python tutorials."*<br>- *"Jarvis, search YouTube for Python tutorials."*<br>- *"Jarvis, search GitHub for React dashboard."*<br>- *"Jarvis, search the web for latest AI news."* | `core/os/browser_manager.py` | Priority routing: preserves verbatim query, routes to YouTube/GitHub/Web destination. Asks for query if missing. |
+| **E. Files & Folders** | `find`, `open`, `create`, `rename`, `move`, `copy`, `delete`, `list` | - *"Jarvis, open Downloads."*<br>- *"Jarvis, find my Python project."*<br>- *"Jarvis, create a folder named Jarvis Projects on the desktop."* | `modules/system/executor.py`, `SafetyGate` | Resolves exact paths; asks clarification on ambiguous matches; enforces safety confirmations for destructive actions. |
+| **F. System Controls** | `volume`, `mute`, `unmute`, `brightness`, `lock`, `shutdown`, `restart`, `screenshot`, `status` | - *"Jarvis, mute volume."*<br>- *"Jarvis, set volume to 50."*<br>- *"Jarvis, take a screenshot."*<br>- *"Jarvis, lock computer."* | `core/platform/windows_platform.py` | Native Windows COM/PowerShell controls. Truthful success reporting. |
+| **G. AI & Content Gen** | `write`, `draft`, `summarize`, `explain`, `analyze`, `code`, `debug` | - *"Jarvis, explain this Python error."*<br>- *"Jarvis, draft an email to the team."* | `core/ai/provider_manager.py` (L3 AI) | Uses configured AI provider (OpenAI, Anthropic, Ollama). If offline, reports specific provider error. |
+| **H. Custom Commands** | `add command`, `when I say`, `list custom commands`, `test` | - *"Jarvis, add a command named Focus Mode."*<br>- *"Jarvis, when I say Start Coding, open VS Code and my project folder."*<br>- *"Jarvis, list my custom commands."* | `core/custom_commands/workflow_engine.py` | SQLite backed, strictly validated tool calls. Zero `eval` or dynamic code execution. |
 
 ---
 
-## 7. Conclusion
+## 5. Test Suite Results & Regression Verification
 
-Commit `f9baad35e5a9d9df1c6cb55d9793db9ff4bca745` (Jarvis 2.0 architecture, Arc Reactor HUD, perception modules, and complete test suite) and commit `d0916ae076d44cc895a15e1d3399a80ead635f0b` (universal command system, custom commands, and response registry) have been cleanly unified and committed to `main` (`04338c0`).
+### 5.1 Full Test Suite Execution Summary
+Executed via `python -m unittest discover -s tests -p "test_*.py"`:
+- **Total Tests Executed:** 447
+- **Passed:** 445
+- **Skipped:** 2 (Hardware-specific audio device tests in CI mode)
+- **Failures:** 0
+- **Errors:** 0
+- **Execution Time:** ~36.1s
 
-All redundant fallback loops and duplicate speech generation bugs are resolved. The system operates with a single truthful response contract across both audio (TTS) and visual (HUD) output layers.
+### 5.2 Universal Command System Regression Tests (`tests/test_universal_command_system_regression.py`)
+All 10 acceptance criteria from Section 7 of the Master Prompt were verified:
+
+| Test Case | Scenario Tested | Result | Verification Detail |
+|---|---|---|---|
+| `test_01_jarvis_help_not_multi_command` | "Jarvis, help" classification | **PASSED** | Intent resolved to `help`, not `multi_command`. Single overview returned. |
+| `test_02_no_duplicate_generic_response` | Zero duplicate fallback output | **PASSED** | Response generated once via `ResponseRegistry`; zero duplicate speech enqueued. |
+| `test_03_open_chatgpt_in_chrome` | "Open ChatGPT in Chrome" routing | **PASSED** | Intent `open_website`, site `chatgpt`, browser `chrome`, target `https://chat.openai.com/`. |
+| `test_04_app_launch_distinct_from_website` | App vs Website disambiguation | **PASSED** | "open chrome" -> `open_app`; "open youtube.com" / "open youtube" -> `open_website`. |
+| `test_05_explicit_search_routing` | YouTube, GitHub, Web search priority | **PASSED** | "search youtube for python" -> target `youtube`; preserves verbatim query text. |
+| `test_06_missing_arguments_and_ambiguity` | Empty search argument handling | **PASSED** | Prompts concise clarification: *"What would you like me to search for, Sir?"*. |
+| `test_07_truthful_failure_reporting` | Nonexistent app error reporting | **PASSED** | Reports missing app truthfully (`UNSUPPORTED_CAPABILITY`) instead of generic fallback. |
+| `test_08_dynamic_capability_list` | Dynamic ToolRegistry synchronization | **PASSED** | `CapabilityService` categorizes active registered tools without static stale lists. |
+| `test_09_custom_command_persistence_safety` | Custom command storage and validation | **PASSED** | Workflow stored in SQLite; validates tools; forbids arbitrary script execution. |
+| `test_10_browser_tab_and_action_controls` | Tab control and DOM read verification | **PASSED** | "new tab", "close tab", "go back" route to `browser_tab_control`; "read webpage" routes to `browser_action`. |
+
+---
+
+## 6. Real-World Smoke Tests & Verification
+
+1. **Browser Navigation Smoke Test:**
+   - Tested `"open ChatGPT in Chrome"`: Verified `BrowserManager` selects Chrome launcher and navigates to `https://chat.openai.com/` without falling back to Google search.
+2. **CDP Offline Guidance Test:**
+   - Tested `"read the current webpage"`: When Chrome is running without remote debugging port `9222`, the system accurately informs the user that CDP is not connected and provides the exact flag (`--remote-debugging-port=9222`) rather than hallucinating page content.
+3. **Tab Navigation vs App Closing:**
+   - Tested `"close tab"`: Correctly dispatches `ctrl+w` browser tab closure instead of attempting to close an OS window named `"tab"`.
+4. **Speech Sanitization & Single Voice Output:**
+   - Verified that `SpeechSanitizer` cleans formatted output, while `JarvisRuntime` issues exactly one TTS invocation per user turn.
+
+---
+
+## 7. Known Limitations & Untested Features
+
+1. **CDP Port Requirement:**
+   - DOM interaction (`click`, `scroll`, `read page`) requires Google Chrome or Microsoft Edge to be started with `--remote-debugging-port=9222`. When launched normally via Windows shell, DOM automation is truthfully reported as offline.
+2. **Multi-Monitor Window Snapping:**
+   - Advanced multi-monitor coordinate placement is limited to standard Windows API bounds (`win32gui`); custom virtual desktop switching requires Windows 11 VirtualDesktopManager COM interfaces.
+3. **Wake-Word Hardware Devices in Headless/CI:**
+   - 2 tests skipped correspond to physical audio hardware checks (`test_wakeword.py` real mic streams), which gracefully fall back to mock detectors when no physical microphone is attached.

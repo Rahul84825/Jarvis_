@@ -448,8 +448,15 @@ class JarvisRuntime:
                 res = self.response_manager.greeting(normalized_text, speak=speak)
                 resp_text = res.get("text", "Hello, Sir.")
             elif intent_lower == "help":
-                res = self.response_manager.help_info(speak=speak)
-                resp_text = res.get("text", "How can I assist you?")
+                from core.capability_service import capability_service
+                scope = (req.entities or {}).get("scope") or req.target or "overview"
+                if scope == "all" or req.action == "show_all_commands":
+                    resp_text = capability_service.get_all_commands_reference()
+                elif scope in ["browser", "filesystem", "applications", "system", "search", "developer", "content", "media", "custom"]:
+                    resp_text = capability_service.get_scoped_commands(scope)
+                else:
+                    resp_text = capability_service.get_help_overview()
+                res = self.response_manager.conversation(resp_text, speak=speak)
             elif intent_lower == "identity":
                 res = self.response_manager.identity_info(speak=speak)
                 resp_text = res.get("text", "I am JARVIS.")
@@ -474,7 +481,7 @@ class JarvisRuntime:
             "project_control", "filesystem_control", "web_search",
             "time_query", "date_query", "math_calculation", "media_control",
             "test_speech", "test_microphone",
-            "browser_control", "youtube_control", "content_generation",
+            "browser_control", "browser_tab_control", "browser_action", "youtube_control", "content_generation",
             "local_search", "developer_workflow", "follow_up",
             "explain_tool_execution", "memory_control", "privacy_control",
             "command_management", "custom_command",
