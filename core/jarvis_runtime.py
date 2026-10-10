@@ -136,9 +136,9 @@ class JarvisRuntime:
         logger.info("Starting background services...")
         self.transcriber.preload_in_background()
         self.tts_manager.start(
-            self._on_speaker_started,
-            self._on_speaker_stopped,
-            self._on_speaker_synthesizing,
+            on_start_speaking=self._on_speaker_started,
+            on_stop_speaking=self._on_speaker_stopped,
+            on_start_synthesizing=self._on_speaker_synthesizing,
             on_audio_amplitude=lambda amp: self._trigger_cb(self.on_audio_amplitude_cb, amp)
         )
         self.listener.start(self._on_speech_start, self._on_speech_end)
