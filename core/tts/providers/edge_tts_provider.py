@@ -27,11 +27,12 @@ class EdgeTTSProvider(BaseTTS):
         fd, temp_path = tempfile.mkstemp(suffix=".mp3", prefix="jarvis_edge_tts_")
         os.close(fd)
 
-        logger.info(f"[EdgeTTS] Synthesizing: '{text}' (Voice: {voice}, Rate: {rate})")
+        timeout_ms = getattr(config, "tts_cloud_timeout_ms", 1500)
+        timeout_s = max(0.2, timeout_ms / 1000.0)
 
         async def _run_synthesis():
             communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, volume=volume)
-            await communicate.save(temp_path)
+            await asyncio.wait_for(communicate.save(temp_path), timeout=timeout_s)
 
         try:
             try:
@@ -57,6 +58,14 @@ class EdgeTTSProvider(BaseTTS):
                 return temp_path
 
             logger.error("[EdgeTTS] Output file is empty.")
+            return None
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(f"[EdgeTTS] Cloud synthesis timed out after {timeout_s:.2f}s. Falling back to local TTS.")
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
             return None
         except Exception as e:
             logger.error(f"[EdgeTTS] Synthesis failed: {e}", exc_info=True)

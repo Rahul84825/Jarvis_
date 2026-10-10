@@ -176,7 +176,6 @@ class MainWindow(QMainWindow):
 
         # External action callbacks (set by main coordinator)
         self.trigger_wakeword_cb = None
-        self.trigger_clap_cb = None
         self.toggle_mute_cb = None
 
         logger.info("Jarvis PyQt6 User Interface initialized.")

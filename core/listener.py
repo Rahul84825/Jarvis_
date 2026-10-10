@@ -185,11 +185,12 @@ class SpeechListener:
 
             # If in standby monitoring mode (VAD)
             if self._running and not self._recording:
-                if self.enable_vad_onset and rms > speech_threshold:
+                if not self.speaking_active and self.enable_vad_onset and rms > speech_threshold:
                     logger.info(f"VAD: Speech onset detected (RMS: {rms:.4f} > Threshold: {speech_threshold:.4f}, Ambient: {self._ambient_rms:.4f}). Recording started.")
                     self._recording = True
                     self._recording_start_time = time.time()
                     self._manual_recording = False
+                    self._speech_detected = True
                     self._audio_buffer = list(self._pre_roll_buffer)
                     self._silence_start = None
                     
@@ -198,13 +199,23 @@ class SpeechListener:
             
             # If actively recording
             elif self._recording:
+                if self.speaking_active and not self._manual_recording:
+                    # Immediately suppress VAD recording if JARVIS begins speaking
+                    self._recording = False
+                    self._audio_buffer = []
+                    self._silence_start = None
+                    self._recording_start_time = None
+                    return
+
                 self._audio_buffer.append(indata.copy())
                 now = time.time()
                 
-                # Check for max recording duration safety cap (e.g., 10 seconds)
+                # Check for max recording duration safety cap (e.g., 5-10 seconds)
                 if self._recording_start_time and (now - self._recording_start_time > self.max_duration):
                     logger.info(f"VAD: Max recording duration limit reached ({self.max_duration}s). Finalizing audio.")
                     self._recording = False
+                    self._manual_recording = False
+                    self._speech_detected = False
                     captured_data = np.concatenate(self._audio_buffer, axis=0)
                     self._audio_buffer = []
                     self._silence_start = None
@@ -212,23 +223,26 @@ class SpeechListener:
                     threading.Thread(target=self._save_and_dispatch, args=(captured_data,), name="ListenerSaveThread", daemon=True).start()
                     return
 
-                # Check for VAD silence timeout (only if not manually triggered)
-                if not self._manual_recording:
-                    if rms < speech_threshold:
-                        if self._silence_start is None:
-                            self._silence_start = now
-                        elif now - self._silence_start > self.silence_duration:
-                            logger.info(f"VAD: Silence duration limit reached ({self.silence_duration}s). Speech finalized.")
-                            self._recording = False
-                            
-                            captured_data = np.concatenate(self._audio_buffer, axis=0)
-                            self._audio_buffer = []
-                            self._silence_start = None
-                            self._recording_start_time = None
-                            
-                            threading.Thread(target=self._save_and_dispatch, args=(captured_data,), name="ListenerSaveThread", daemon=True).start()
-                    else:
-                        self._silence_start = None  # Speech continues, reset silence timer
+                # Track speech occurrence during manual or VAD recording
+                if rms > speech_threshold:
+                    self._speech_detected = True
+                    self._silence_start = None  # Speech continues, reset silence timer
+                elif self._speech_detected:
+                    # Once speech was detected, finalize audio when silence threshold is reached
+                    if self._silence_start is None:
+                        self._silence_start = now
+                    elif now - self._silence_start > self.silence_duration:
+                        logger.info(f"VAD: Silence duration limit reached ({self.silence_duration}s). Speech finalized.")
+                        self._recording = False
+                        self._manual_recording = False
+                        self._speech_detected = False
+                        
+                        captured_data = np.concatenate(self._audio_buffer, axis=0)
+                        self._audio_buffer = []
+                        self._silence_start = None
+                        self._recording_start_time = None
+                        
+                        threading.Thread(target=self._save_and_dispatch, args=(captured_data,), name="ListenerSaveThread", daemon=True).start()
 
     def _save_and_dispatch(self, audio_data):
         """Encodes float32 samples to 16-bit WAV and triggers end-of-speech callback."""

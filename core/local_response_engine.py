@@ -46,7 +46,8 @@ class LocalResponseEngine:
             "error_generic": ["I couldn't complete that."],
             "error_not_found": ["I couldn't find that application."],
             "error_unsupported": ["That action isn't supported on this system."],
-            "unknown": ["I'm not sure how to help with that yet, but I can open apps, websites, control volume, or take screenshots."]
+            "unknown": ["I'm not sure how to help with that yet, but I can open apps, websites, control volume, or take screenshots."],
+            "no_provider_fallback": ["I'm not sure how to help with that yet."]
         }
 
         if self.responses_path.exists():
@@ -160,15 +161,15 @@ class LocalResponseEngine:
             return self.get_template("lock_pc")
 
         if execution_result:
+            from core.response_registry import response_registry, CommandOutcome
             if not execution_result.get("success", True):
-                msg = execution_result.get("message", "")
-                if "not found" in msg.lower():
-                    return self.get_template("error_not_found")
-                return self.get_template("error_generic")
-
-            msg = execution_result.get("message")
-            if msg:
-                return msg
+                raw_outcome = execution_result.get("outcome")
+                try:
+                    outcome = CommandOutcome(raw_outcome) if raw_outcome else CommandOutcome.EXECUTION_FAILED
+                except ValueError:
+                    outcome = CommandOutcome.EXECUTION_FAILED
+                return response_registry.get_failure_response(intent_node, outcome, execution_result.get("message"))
+            return response_registry.get_success_response(intent_node, execution_result)
 
         return self.get_template(intent)
 
@@ -186,7 +187,8 @@ class LocalResponseEngine:
             if msg:
                 # Strip leading "Sure." or "Done." for clean chaining
                 msg_clean = msg.replace("Sure, ", "").replace("Sure. ", "").replace("Done. ", "")
-                phrases.append(msg_clean)
+                if msg_clean and msg_clean not in phrases:
+                    phrases.append(msg_clean)
 
         if len(phrases) == 1:
             return phrases[0]

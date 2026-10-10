@@ -1,0 +1,16 @@
+{
+    "name": "Active Gamer",
+    "role": "Lead Architect & Implementation Engineer",
+    "projects": [
+        "jarvis"
+    ],
+    "instructions": [
+        "Prefer concise and actionable answers.",
+        "Keep local system commands fast and offline.",
+        "Verify outcomes before reporting completion."
+    ],
+    "memories": [
+        "Project jarvis is a native Python and PyQt desktop assistant.",
+        "Prefers local execution over unnecessary cloud API calls."
+    ]
+}

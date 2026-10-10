@@ -10,16 +10,33 @@ class RiskLevel:
 # Intent/Action risk mapping
 INTENT_RISK_MAPPING = {
     "open_app": RiskLevel.LOW,
+    "application.launch": RiskLevel.LOW,
+    "command_management": RiskLevel.LOW,
+    "custom_command": RiskLevel.LOW,
     "close_app": RiskLevel.MEDIUM,
     "window_control": RiskLevel.MEDIUM,
     "file_access": RiskLevel.MEDIUM,
     "screenshot": RiskLevel.MEDIUM,
     "status_request": RiskLevel.MEDIUM,
     "volume_control": RiskLevel.MEDIUM,
-    "lock_pc": RiskLevel.MEDIUM, # Primary goal asks for 'lock my computer' to work smoothly
+    "lock_pc": RiskLevel.MEDIUM,  # Primary goal asks for 'lock my computer' to work smoothly
     "sleep_pc": RiskLevel.HIGH,
     "restart_pc": RiskLevel.HIGH,
-    "shutdown_pc": RiskLevel.HIGH
+    "shutdown_pc": RiskLevel.HIGH,
+    "browser_control": RiskLevel.LOW,
+    "youtube_control": RiskLevel.LOW,
+    "web_search": RiskLevel.LOW,
+    "site_search": RiskLevel.LOW,
+    "local_search": RiskLevel.LOW,
+    "content_generation": RiskLevel.LOW,
+    "filesystem_control": RiskLevel.LOW,
+    "developer_workflow": RiskLevel.MEDIUM,
+    "follow_up": RiskLevel.LOW,
+    "explain_tool_execution": RiskLevel.LOW,
+    "memory_control": RiskLevel.LOW,
+    "privacy_control": RiskLevel.LOW,
+    "unsupported_capability": RiskLevel.LOW,
+    "invalid_command": RiskLevel.LOW
 }
 
 def get_action_risk_level(intent: str, action: str = None) -> str:
@@ -37,18 +54,31 @@ def get_action_risk_level(intent: str, action: str = None) -> str:
             return RiskLevel.MEDIUM
         elif action in ["battery", "cpu", "ram", "disk"]:
             return RiskLevel.MEDIUM
-            
+
+    if intent == "filesystem_control":
+        if action in ["delete", "remove", "delete_file", "delete_folder"]:
+            return RiskLevel.HIGH
+        return RiskLevel.LOW
+
     return INTENT_RISK_MAPPING.get(intent, RiskLevel.MEDIUM)
 
 def is_safe_command(intent: str, params: dict) -> bool:
     """Validates parameters of a command to ensure they are safe and do not contain
     malicious strings or shell injection vectors.
     """
-    # Block shell characters in targets/queries
-    for key, val in params.items():
+    # Content generation, web search, memory, privacy, and command management are safe from shell execution
+    if intent in ["content_generation", "web_search", "open_website", "conversation", "question", "explain_tool_execution", "memory_control", "privacy_control", "command_management", "custom_command"]:
+        # Only verify explicit shell execution targets if present
+        check_keys = ["command", "script"]
+    else:
+        check_keys = ["target", "command", "app"]
+
+    dangerous_chars = [";", "&", "|", "`", "$", ">", "<", "\n"]
+    for key in check_keys:
+        val = params.get(key)
         if isinstance(val, str):
-            # Check for shell metacharacters that could be used for injection
-            if any(char in val for char in [";", "&", "|", "`", "$", ">", "<", "\n"]):
+            if any(char in val for char in dangerous_chars):
                 logger.warning(f"Safety violation: block characters detected in param '{key}': {repr(val)}")
                 return False
+
     return True

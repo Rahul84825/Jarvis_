@@ -35,7 +35,7 @@ class Config:
             "good morning jarvis", "good evening jarvis", "good afternoon jarvis", 
             "namaste jarvis", "yo jarvis", "hey buddy", "goliya"
         ]
-        self.wakeword_engine = "mock"       # Options: "mock", "openwakeword", "porcupine"
+        self.wakeword_engine = "openwakeword"   # Options: "openwakeword", "porcupine", "mock"
         self.wakeword_sensitivity = 0.5
         self.porcupine_api_key = ""         # Picovoice Porcupine API Key
         self.openwakeword_model_path = ""   # Custom model path (optional)
@@ -44,6 +44,7 @@ class Config:
         self.audio_sample_rate = 16000
         self.audio_channels = 1
         self.audio_input_device = None     # None represents default input device
+        self.audio_output_device = None    # None represents system default output device
         self.microphone_device = os.environ.get("MICROPHONE_DEVICE", None)
         self.debug_audio = os.environ.get("JARVIS_DEBUG_AUDIO", os.environ.get("DEBUG_AUDIO", "false")).lower() in ["true", "1", "yes"]
         self.vad_threshold = 0.015         # VAD energy threshold (float 0.0 to 1.0)
@@ -64,6 +65,7 @@ class Config:
         # Database & Configuration Paths
         self.db_conversations = str(MEMORY_DIR / "conversations.db")
         self.db_tasks = str(MEMORY_DIR / "tasks.db")
+        self.persistent_memory_enabled = True
         self.links_path = str(BASE_DIR / "config" / "links.json")
         
         # Logging Settings
@@ -79,17 +81,24 @@ class Config:
         self.gemini_temperature = 0.7
         self.gemini_max_tokens = 150
         
-        # Whisper model size and device
-        self.whisper_model_size = "small"
+        # Whisper model size, beam size, and device
+        self.whisper_model_size = "base"
+        self.whisper_beam_size = 1
         self.whisper_device = "cpu"
         
-        # TTS voice, rate, pitch, volume, provider
-        self.tts_provider = "edge"  # Options: "edge", "pyttsx3", "gtts"
+        # TTS voice, rate, pitch, volume, provider, cloud timeout, and cache
+        self.tts_provider = "edge"  # Options: "edge", "sapi", "windows", "pyttsx3", "gtts"
         self.tts_voice = "en-US-GuyNeural"
         self.tts_rate = "+15%"
         self.tts_pitch = "+0Hz"
         self.tts_volume = "+0%"
         self.tts_language = "en"
+        self.tts_cloud_timeout_ms = 2500
+        self.tts_cache_enabled = True
+
+        # Observability & Tracing Settings
+        self.tracing_enabled = True
+        self.whisper_threads = 4
 
         # Load from config file if exists
         self.load()
@@ -98,7 +107,7 @@ class Config:
         self._apply_env_overrides()
 
     def load(self):
-        if self.config_path.exists():
+        if self.config_path.exists() and self.config_path.stat().st_size > 0:
             try:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -152,11 +161,62 @@ class Config:
         if "JARVIS_WHISPER_MODEL" in os.environ and os.environ["JARVIS_WHISPER_MODEL"]:
             self.whisper_model_size = os.environ["JARVIS_WHISPER_MODEL"]
             self.model_whisper_size = os.environ["JARVIS_WHISPER_MODEL"]
+        elif "WHISPER_MODEL" in os.environ and os.environ["WHISPER_MODEL"]:
+            self.whisper_model_size = os.environ["WHISPER_MODEL"]
+            self.model_whisper_size = os.environ["WHISPER_MODEL"]
+            
+        if "JARVIS_WHISPER_BEAM_SIZE" in os.environ:
+            try:
+                self.whisper_beam_size = int(os.environ["JARVIS_WHISPER_BEAM_SIZE"])
+            except ValueError:
+                pass
+        elif "WHISPER_BEAM_SIZE" in os.environ:
+            try:
+                self.whisper_beam_size = int(os.environ["WHISPER_BEAM_SIZE"])
+            except ValueError:
+                pass
+
+        if "JARVIS_SILENCE_DURATION" in os.environ:
+            try:
+                self.silence_duration = float(os.environ["JARVIS_SILENCE_DURATION"])
+            except ValueError:
+                pass
+        elif "SILENCE_DURATION" in os.environ:
+            try:
+                self.silence_duration = float(os.environ["SILENCE_DURATION"])
+            except ValueError:
+                pass
+
+        if "JARVIS_TTS_PROVIDER" in os.environ and os.environ["JARVIS_TTS_PROVIDER"]:
+            self.tts_provider = os.environ["JARVIS_TTS_PROVIDER"]
+        elif "TTS_PROVIDER" in os.environ and os.environ["TTS_PROVIDER"]:
+            self.tts_provider = os.environ["TTS_PROVIDER"]
+
+        if "JARVIS_TTS_CLOUD_TIMEOUT_MS" in os.environ:
+            try:
+                self.tts_cloud_timeout_ms = int(os.environ["JARVIS_TTS_CLOUD_TIMEOUT_MS"])
+            except ValueError:
+                pass
+        elif "TTS_CLOUD_TIMEOUT_MS" in os.environ:
+            try:
+                self.tts_cloud_timeout_ms = int(os.environ["TTS_CLOUD_TIMEOUT_MS"])
+            except ValueError:
+                pass
+
+        if "JARVIS_TTS_CACHE_ENABLED" in os.environ:
+            self.tts_cache_enabled = os.environ["JARVIS_TTS_CACHE_ENABLED"].lower() in ["true", "1", "yes"]
+        elif "TTS_CACHE_ENABLED" in os.environ:
+            self.tts_cache_enabled = os.environ["TTS_CACHE_ENABLED"].lower() in ["true", "1", "yes"]
+
         if "JARVIS_TTS_VOICE" in os.environ and os.environ["JARVIS_TTS_VOICE"]:
             self.tts_voice = os.environ["JARVIS_TTS_VOICE"]
             self.model_tts_voice = os.environ["JARVIS_TTS_VOICE"]
         if "JARVIS_LOG_LEVEL" in os.environ:
             self.log_level = os.environ["JARVIS_LOG_LEVEL"]
+        if "AUDIO_OUTPUT_DEVICE" in os.environ:
+            self.audio_output_device = os.environ["AUDIO_OUTPUT_DEVICE"]
+        elif "JARVIS_AUDIO_OUTPUT_DEVICE" in os.environ:
+            self.audio_output_device = os.environ["JARVIS_AUDIO_OUTPUT_DEVICE"]
         if "JARVIS_UI_WIDTH" in os.environ:
             try:
                 self.ui_width = int(os.environ["JARVIS_UI_WIDTH"])
@@ -167,11 +227,8 @@ class Config:
                 self.wake_words = json.loads(os.environ["JARVIS_WAKE_WORDS"])
             except Exception:
                 pass
-        if "JARVIS_CLAP_THRESHOLD" in os.environ:
-            try:
-                self.clap_threshold = float(os.environ["JARVIS_CLAP_THRESHOLD"])
-            except ValueError:
-                pass
+        if "JARVIS_PERSISTENT_MEMORY" in os.environ:
+            self.persistent_memory_enabled = os.environ["JARVIS_PERSISTENT_MEMORY"].lower() in ["true", "1", "yes"]
 
     @property
     def BASE_DIR(self):

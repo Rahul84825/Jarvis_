@@ -12,7 +12,6 @@ Jarvis strictly decouples microphone audio input from TTS audio output to elimin
 | **SpeechListener (VAD)** | Soundcard Microphone | None | **Locked / Paused** |
 | **WakeWordDetector** | Soundcard Microphone | None | **Locked / Suppressed** |
 | **TTSManager (Speaker)** | None | Soundcard Speakers | **Active** |
-| **ClapDetector** | Soundcard Microphone | None | **Locked / Paused** |
 
 ---
 
