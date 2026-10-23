@@ -34,7 +34,7 @@ class TranscriptValidator:
     KNOWN_CONVERSATIONAL_WORDS = {
         "okay", "ok", "yes", "yeah", "yup", "no", "nope", "please", "thanks", 
         "thank you", "bye", "goodbye", "hello", "hi", "hey", "what", "oh",
-        "jarvis", "goliya", "buddy"
+        "santra", "jarvis", "goliya", "buddy"
     }
 
     ACTION_VERBS = {

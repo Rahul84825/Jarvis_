@@ -149,3 +149,12 @@ class CDPClient:
         except Exception as e:
             logger.debug(f"[CDP] Tab close failed: {e}")
             return False
+
+    def verify_tab_closed(self, tab_id: str) -> bool:
+        """Verifies that a specific tab ID is no longer present in open tabs."""
+        try:
+            tabs = self.list_tabs()
+            return not any(t.get("id") == tab_id for t in tabs)
+        except Exception as e:
+            logger.debug(f"[CDP] Tab close verification error: {e}")
+            return False

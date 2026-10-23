@@ -25,17 +25,23 @@ class Config:
         # ==========================================
         
         # Assistant & Identity Settings
-        self.assistant_name = "Jarvis"
+        self.assistant_name = "Santra"
+        self.full_name = "Santra AI Desktop Assistant"
+        self.creator_name = ""  # Configurable; if unset, system reports not configured
+        self.project_purpose = "A native desktop AI assistant engineered for local computer control, system automation, and intelligent interaction."
+        self.personality_tone = "normal"  # Options: "normal", "professional", "funny", "dramatic"
+        self.response_length = "normal"   # Options: "concise", "normal", "detailed"
+        self.humor_enabled = True         # Boolean humor preference
         self.owner_name = "Active Gamer"
         self.version = "1.1"
 
         # Wake Words & Engine settings
         self.wake_words = [
-            "jarvis", "hey jarvis", "hello jarvis", "hi jarvis", 
-            "good morning jarvis", "good evening jarvis", "good afternoon jarvis", 
-            "namaste jarvis", "yo jarvis", "hey buddy", "goliya"
+            "santra", "hey santra", "hello santra", "hi santra", 
+            "good morning santra", "good evening santra", "good afternoon santra", 
+            "namaste santra", "yo santra", "hey buddy", "jarvis", "hey jarvis", "goliya"
         ]
-        self.wakeword_engine = "openwakeword"   # Options: "openwakeword", "porcupine", "mock"
+        self.wakeword_engine = "santra"   # Options: "santra", "openwakeword", "porcupine", "mock"
         self.wakeword_sensitivity = 0.5
         self.porcupine_api_key = ""         # Picovoice Porcupine API Key
         self.openwakeword_model_path = ""   # Custom model path (optional)
@@ -52,7 +58,7 @@ class Config:
         self.max_duration = 5.0            # Max recording duration cap in seconds
         
         # UI Settings
-        self.ui_title = "JARVIS v1.1 - AI Desktop Assistant"
+        self.ui_title = "SANTRA v1.1 - AI Desktop Assistant"
         self.ui_width = 900
         self.ui_height = 650
         self.ui_theme = "dark"
@@ -60,7 +66,7 @@ class Config:
         
         # Model Settings
         self.model_whisper_size = "small"
-        self.model_tts_voice = "en-US-GuyNeural"
+        self.model_tts_voice = "en-GB-RyanNeural"
         
         # Database & Configuration Paths
         self.db_conversations = str(MEMORY_DIR / "conversations.db")
@@ -72,7 +78,7 @@ class Config:
         self.log_file = str(LOGS_DIR / "jarvis.log")
         self.log_level = "DEBUG"
 
-        # AI Provider Settings (Options: "none", "local", "openrouter", "cerebras", "gemini", "openai")
+        # AI Provider Settings (Options: "none", "local", "openrouter", "cerebras", "gemini", "openai", "nvidia")
         self.ai_provider = "none"
         self.openrouter_api_key = ""
         self.cerebras_api_key = ""
@@ -80,6 +86,15 @@ class Config:
         self.gemini_api_key = ""
         self.gemini_temperature = 0.7
         self.gemini_max_tokens = 150
+
+        # NVIDIA Nemotron Settings
+        self.nvidia_api_key = ""
+        self.nvidia_base_url = "https://integrate.api.nvidia.com/v1"
+        self.nvidia_model = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+        self.nvidia_temperature = 0.6
+        self.nvidia_max_tokens = 2048
+        self.nvidia_timeout_sec = 25.0
+        self.nvidia_max_retries = 3
         
         # Whisper model size, beam size, and device
         self.whisper_model_size = "base"
@@ -88,13 +103,16 @@ class Config:
         
         # TTS voice, rate, pitch, volume, provider, cloud timeout, and cache
         self.tts_provider = "edge"  # Options: "edge", "sapi", "windows", "pyttsx3", "gtts"
-        self.tts_voice = "en-US-GuyNeural"
-        self.tts_rate = "+15%"
-        self.tts_pitch = "+0Hz"
-        self.tts_volume = "+0%"
+        self.tts_voice = "en-GB-RyanNeural"
+        self.tts_rate = "+0%"
+        self.tts_pitch = "-2Hz"
+        self.tts_volume = "-20%"
         self.tts_language = "en"
-        self.tts_cloud_timeout_ms = 2500
+        self.tts_cloud_timeout_ms = 6500
         self.tts_cache_enabled = True
+        self.playback_volume = 0.70
+        self.sapi_volume = 70
+        self.sapi_voice = "Zira"
 
         # Observability & Tracing Settings
         self.tracing_enabled = True
@@ -114,13 +132,38 @@ class Config:
                     for key, val in data.items():
                         if hasattr(self, key):
                             setattr(self, key, val)
+                # Backward-compatibility migration: Ensure Santra is canonical
+                if getattr(self, "assistant_name", "").lower() in ("jarvis", "goliya", ""):
+                    self.assistant_name = "Santra"
+                    self.full_name = "Santra AI Desktop Assistant"
+                if not getattr(self, "ui_title", "") or "jarvis" in self.ui_title.lower():
+                    self.ui_title = "SANTRA v1.1 - AI Desktop Assistant"
+                current_words = [w.lower() for w in getattr(self, "wake_words", [])]
+                if "santra" not in current_words:
+                    santra_phrases = ["santra", "hey santra", "hello santra", "hi santra"]
+                    self.wake_words = santra_phrases + [w for w in getattr(self, "wake_words", []) if w not in santra_phrases]
+                if getattr(self, "wakeword_engine", "") == "openwakeword" and not getattr(self, "openwakeword_model_path", ""):
+                    # Default to native santra engine when model path not set
+                    self.wakeword_engine = "santra"
             except Exception as e:
                 print(f"[Config] Error loading config.json: {e}")
 
     def save(self):
         try:
             # Exclude config_path to avoid circular reference in json
-            data = {k: v for k, v in self.__dict__.items() if k != 'config_path'}
+            # Sanitize credentials so API keys never get persisted into tracked config.json
+            sensitive_keys = {
+                'nvidia_api_key', 'openai_api_key', 'gemini_api_key',
+                'openrouter_api_key', 'cerebras_api_key', 'porcupine_api_key'
+            }
+            data = {}
+            for k, v in self.__dict__.items():
+                if k == 'config_path':
+                    continue
+                if k in sensitive_keys:
+                    data[k] = ""
+                else:
+                    data[k] = v
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)
         except Exception as e:
@@ -154,6 +197,28 @@ class Config:
             self.openai_api_key = os.environ["OPENAI_API_KEY"]
         if "GEMINI_API_KEY" in os.environ and os.environ["GEMINI_API_KEY"]:
             self.gemini_api_key = os.environ["GEMINI_API_KEY"]
+        if "NVIDIA_API_KEY" in os.environ and os.environ["NVIDIA_API_KEY"]:
+            self.nvidia_api_key = os.environ["NVIDIA_API_KEY"]
+            if self.ai_provider == "none":
+                self.ai_provider = "nvidia"
+        elif "JARVIS_NVIDIA_API_KEY" in os.environ and os.environ["JARVIS_NVIDIA_API_KEY"]:
+            self.nvidia_api_key = os.environ["JARVIS_NVIDIA_API_KEY"]
+            if self.ai_provider == "none":
+                self.ai_provider = "nvidia"
+        if "NVIDIA_BASE_URL" in os.environ and os.environ["NVIDIA_BASE_URL"]:
+            self.nvidia_base_url = os.environ["NVIDIA_BASE_URL"]
+        if "NVIDIA_MODEL" in os.environ and os.environ["NVIDIA_MODEL"]:
+            self.nvidia_model = os.environ["NVIDIA_MODEL"]
+        if "NVIDIA_TIMEOUT_SEC" in os.environ and os.environ["NVIDIA_TIMEOUT_SEC"]:
+            try:
+                self.nvidia_timeout_sec = float(os.environ["NVIDIA_TIMEOUT_SEC"])
+            except ValueError:
+                pass
+        if "NVIDIA_MAX_RETRIES" in os.environ and os.environ["NVIDIA_MAX_RETRIES"]:
+            try:
+                self.nvidia_max_retries = int(os.environ["NVIDIA_MAX_RETRIES"])
+            except ValueError:
+                pass
         if "PORCUPINE_API_KEY" in os.environ and os.environ["PORCUPINE_API_KEY"]:
             self.porcupine_api_key = os.environ["PORCUPINE_API_KEY"]
         if "JARVIS_WAKEWORD_ENGINE" in os.environ and os.environ["JARVIS_WAKEWORD_ENGINE"]:
@@ -211,6 +276,17 @@ class Config:
         if "JARVIS_TTS_VOICE" in os.environ and os.environ["JARVIS_TTS_VOICE"]:
             self.tts_voice = os.environ["JARVIS_TTS_VOICE"]
             self.model_tts_voice = os.environ["JARVIS_TTS_VOICE"]
+        if "JARVIS_TTS_PITCH" in os.environ and os.environ["JARVIS_TTS_PITCH"]:
+            self.tts_pitch = os.environ["JARVIS_TTS_PITCH"]
+        if "JARVIS_TTS_RATE" in os.environ and os.environ["JARVIS_TTS_RATE"]:
+            self.tts_rate = os.environ["JARVIS_TTS_RATE"]
+        if "JARVIS_TTS_VOLUME" in os.environ and os.environ["JARVIS_TTS_VOLUME"]:
+            self.tts_volume = os.environ["JARVIS_TTS_VOLUME"]
+        if "JARVIS_PLAYBACK_VOLUME" in os.environ:
+            try:
+                self.playback_volume = float(os.environ["JARVIS_PLAYBACK_VOLUME"])
+            except ValueError:
+                pass
         if "JARVIS_LOG_LEVEL" in os.environ:
             self.log_level = os.environ["JARVIS_LOG_LEVEL"]
         if "AUDIO_OUTPUT_DEVICE" in os.environ:
@@ -229,6 +305,18 @@ class Config:
                 pass
         if "JARVIS_PERSISTENT_MEMORY" in os.environ:
             self.persistent_memory_enabled = os.environ["JARVIS_PERSISTENT_MEMORY"].lower() in ["true", "1", "yes"]
+
+        if "JARVIS_CREATOR_NAME" in os.environ and os.environ["JARVIS_CREATOR_NAME"]:
+            self.creator_name = os.environ["JARVIS_CREATOR_NAME"]
+        elif "CREATOR_NAME" in os.environ and os.environ["CREATOR_NAME"]:
+            self.creator_name = os.environ["CREATOR_NAME"]
+
+        if "JARVIS_PERSONALITY_TONE" in os.environ and os.environ["JARVIS_PERSONALITY_TONE"]:
+            self.personality_tone = os.environ["JARVIS_PERSONALITY_TONE"].lower()
+        if "JARVIS_RESPONSE_LENGTH" in os.environ and os.environ["JARVIS_RESPONSE_LENGTH"]:
+            self.response_length = os.environ["JARVIS_RESPONSE_LENGTH"].lower()
+        if "JARVIS_HUMOR_ENABLED" in os.environ:
+            self.humor_enabled = os.environ["JARVIS_HUMOR_ENABLED"].lower() in ["true", "1", "yes"]
 
     @property
     def BASE_DIR(self):

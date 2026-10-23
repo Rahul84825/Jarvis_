@@ -23,12 +23,18 @@ class QuickActionsPanel(HUDFrame):
         self.layout.addWidget(hdr)
 
         actions = [
+            ("🔍 Explain Screen", "Explain my screen in simple language"),
+            ("📄 Create File", "Create a Python file on Desktop"),
+            ("📁 Search My Files", "Search my files"),
+            ("⚙️ AI Providers", "AI provider settings"),
             ("🌐 Open Chrome", "Open Chrome"),
             ("📑 Open New Tab", "Open a new tab"),
             ("📸 Take Screenshot", "Take a screenshot"),
+            ("🌙 Sleep Mode", "go to sleep"),
             ("📊 System Status", "What is my CPU and RAM usage?"),
             ("🔊 Test Audio Output", "Test your speakers"),
             ("📁 Open Downloads", "Open my Downloads"),
+            ("🧪 Virtual Testing Lab", "open virtual testing room"),
             ("💡 Capabilities & Help", "What can you do?")
         ]
 

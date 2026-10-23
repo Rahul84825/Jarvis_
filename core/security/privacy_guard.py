@@ -55,7 +55,9 @@ REDACTION_PATTERNS = [
     # 16. US Social Security Numbers
     (r"\b\d{3}-\d{2}-\d{4}\b", "[REDACTED_SSN]"),
     # 17. Standard Email Addresses (PII protection)
-    (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b", "[REDACTED_EMAIL]")
+    (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b", "[REDACTED_EMAIL]"),
+    # 18. NVIDIA API Keys (nvapi-...)
+    (r"\bnvapi-[a-zA-Z0-9_-]{20,}\b", "[REDACTED_NVIDIA_KEY]")
 ]
 
 # Injection Patterns for External Output Sanitization

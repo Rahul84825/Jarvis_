@@ -99,5 +99,18 @@
         "windows": "microsoft.windows.camera:",
         "linux": "cheese",
         "aliases": ["camera", "webcam", "the camera", "windows camera"]
+    },
+    "valorant": {
+        "windows": "valorant",
+        "linux": null,
+        "aliases": ["valorant", "val", "play valorant", "riot valorant", "game valorant"],
+        "website": "https://playvalorant.com"
+    },
+    "control_center": {
+        "windows": "CClnk.exe",
+        "linux": null,
+        "aliases": ["control center", "acer control center", "clevo control center", "fan control"],
+        "website": null
     }
 }
+

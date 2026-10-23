@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import ctypes
 import shutil
@@ -227,6 +228,17 @@ class WindowsPlatform(BasePlatform):
                 Path(pfx86) / "Antigravity IDE" / "Antigravity IDE.exe",
                 Path(os.path.expanduser("~")) / ".gemini" / "antigravity" / "antigravity.exe",
                 Path(os.path.expanduser("~")) / ".gemini" / "antigravity-ide" / "antigravity-ide.exe",
+            ],
+            "valorant": [
+                Path(os.environ.get("ProgramData", "C:\\ProgramData")) / "Riot Games" / "RiotClientInstalls.json",
+                Path(os.environ.get("USERPROFILE", "C:\\Users\\activ")) / "Riot Games" / "Riot Client" / "RiotClientServices.exe",
+                Path("C:\\Riot Games\\Riot Client\\RiotClientServices.exe"),
+            ],
+            "control_center": [
+                Path(pfx86) / "ControlCenter" / "CClnk.exe",
+                Path(pf) / "ControlCenter" / "CClnk.exe",
+                Path(pfx86) / "ControlCenter" / "ControlCenter.exe",
+                Path(pf) / "ControlCenter" / "ControlCenter.exe",
             ]
         }
 
@@ -239,8 +251,143 @@ class WindowsPlatform(BasePlatform):
     # ==========================================
     # APPLICATION CONTROL
     # ==========================================
+    def launch_valorant(self) -> Dict[str, Any]:
+        """Launches Valorant via official Riot Client launcher with process verification.
+        Distinguishes between Riot Client starting vs game process running.
+        """
+        # 1. Check if game is already running
+        for proc in psutil.process_iter(['name']):
+            try:
+                pname = (proc.info['name'] or '').lower()
+                if pname in ["valorant.exe", "valorant-win64-shipping.exe"]:
+                    self.focus_application("valorant")
+                    return {
+                        "success": True,
+                        "status": "running",
+                        "message": "Valorant is already running."
+                    }
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        # 2. Discover Riot Client binary and arguments
+        from core.apps.application_discovery import app_discovery
+        app, _ = app_discovery.find_application("valorant")
+        rc_exe = None
+        rc_args = ["--launch-product=valorant", "--launch-patchline=live"]
+
+        if app and app.executable_path and Path(app.executable_path).exists() and not app.executable_path.lower().endswith(".lnk"):
+            rc_exe = app.executable_path
+            if app.arguments:
+                rc_args = app.arguments
+        else:
+            # Check RiotClientInstalls.json directly
+            riot_json = Path(os.environ.get("ProgramData", "C:/ProgramData")) / "Riot Games" / "RiotClientInstalls.json"
+            if riot_json.exists():
+                try:
+                    with open(riot_json, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    cand = data.get("rc_live") or data.get("rc_default")
+                    if not cand and "associated_client" in data:
+                        for _, p in data["associated_client"].items():
+                            if p and Path(p).exists():
+                                cand = p
+                                break
+                    if cand and Path(cand).exists():
+                        rc_exe = str(cand)
+                except Exception:
+                    pass
+
+        # Fallback to Start Menu shortcut or common paths
+        if not rc_exe:
+            lnk = Path(os.environ.get("ProgramData", "C:/ProgramData")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Riot Games" / "VALORANT.lnk"
+            if lnk.exists():
+                try:
+                    import win32com.client
+                    shell = win32com.client.Dispatch("WScript.Shell")
+                    sc = shell.CreateShortcut(str(lnk))
+                    if sc.TargetPath and Path(sc.TargetPath).exists():
+                        rc_exe = sc.TargetPath
+                        if sc.Arguments:
+                            import shlex
+                            rc_args = shlex.split(sc.Arguments)
+                except Exception:
+                    pass
+
+        if not rc_exe:
+            for p in [
+                Path(os.environ.get("USERPROFILE", "C:/Users/activ")) / "Riot Games" / "Riot Client" / "RiotClientServices.exe",
+                Path("C:/Riot Games/Riot Client/RiotClientServices.exe"),
+                Path("D:/Riot Games/Riot Client/RiotClientServices.exe")
+            ]:
+                if p.exists():
+                    rc_exe = str(p)
+                    break
+
+        if not rc_exe or not Path(rc_exe).exists():
+            return {
+                "success": False,
+                "status": "not_installed",
+                "message": "Valorant is not installed or could not be found. Please check your Riot Games installation."
+            }
+
+        # 3. Launch via official command
+        cmd = [rc_exe] + rc_args
+        try:
+            cwd_path = str(Path(rc_exe).parent)
+            subprocess.Popen(cmd, cwd=cwd_path, shell=False)
+        except Exception as e:
+            logger.error(f"[Windows] Failed to launch Riot Client for Valorant: {e}")
+            return {
+                "success": False,
+                "status": "execution_failed",
+                "message": f"Failed to launch Riot Client: {e}"
+            }
+
+        # 4. Verification polling (up to 3.0 seconds)
+        t_deadline = time.time() + 3.0
+        game_running = False
+        launcher_running = False
+
+        while time.time() < t_deadline:
+            time.sleep(0.5)
+            for proc in psutil.process_iter(['name']):
+                try:
+                    pname = (proc.info['name'] or '').lower()
+                    if pname in ["valorant.exe", "valorant-win64-shipping.exe"]:
+                        game_running = True
+                        break
+                    elif pname == "riotclientservices.exe":
+                        launcher_running = True
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            if game_running:
+                break
+
+        if game_running:
+            return {
+                "success": True,
+                "status": "running",
+                "message": "Valorant game client is running."
+            }
+        elif launcher_running:
+            return {
+                "success": True,
+                "status": "launcher_started",
+                "message": "Riot Client started and is launching Valorant."
+            }
+        else:
+            return {
+                "success": False,
+                "status": "failed",
+                "message": "Valorant launch was initiated, but the process could not be verified."
+            }
+
     def open_application(self, app_key: str) -> bool:
         key = self.resolve_app_key(app_key)
+        if key == "valorant":
+            res = self.launch_valorant()
+            return res.get("success", False)
+
         if self.is_application_running(key) and key not in ["explorer", "notepad", "calculator"]:
             if self.focus_application(key):
                 return True
@@ -249,6 +396,12 @@ class WindowsPlatform(BasePlatform):
         try:
             # Attempt 1: Absolute path execution
             if os.path.isabs(exec_path) and os.path.exists(exec_path):
+                if exec_path.lower().endswith(".lnk"):
+                    try:
+                        os.startfile(exec_path)
+                        return True
+                    except Exception:
+                        pass
                 subprocess.Popen([exec_path])
                 return True
 
@@ -270,8 +423,16 @@ class WindowsPlatform(BasePlatform):
                 except Exception:
                     pass
 
-            subprocess.Popen(f'start "" "{exec_path}"', shell=True)
-            return True
+            # Check if exec_path is a registered URI scheme or protocol (e.g. ms-settings:, calc:, etc.)
+            if ":" in exec_path and not os.path.splitdrive(exec_path)[0]:
+                try:
+                    os.startfile(exec_path)
+                    return True
+                except Exception:
+                    pass
+
+            logger.warning(f"[Windows] Application '{key}' ({exec_path}) is not found or installed.")
+            return False
         except Exception as e:
             logger.error(f"[Windows] Failed to launch application '{key}': {e}", exc_info=True)
             return False
@@ -333,6 +494,10 @@ class WindowsPlatform(BasePlatform):
             target_names.extend(["code.exe"])
         elif key == "edge":
             target_names.extend(["msedge.exe", "edge.exe"])
+        elif key == "valorant":
+            target_names.extend(["valorant.exe", "valorant-win64-shipping.exe", "riotclientservices.exe"])
+        elif key in ["control_center", "cclnk"]:
+            target_names.extend(["cclnk.exe", "controlcenter.exe"])
 
         for proc in psutil.process_iter(['name']):
             try:
@@ -376,7 +541,9 @@ class WindowsPlatform(BasePlatform):
                 "spotify": "Spotify",
                 "discord": "Discord",
                 "steam": "Steam",
-                "terminal": "Terminal"
+                "terminal": "Terminal",
+                "valorant": "VALORANT",
+                "control_center": "Control Center"
             }
             keyword = window_keywords.get(key, key)
             windows = gw.getWindowsWithTitle("")
@@ -567,6 +734,7 @@ class WindowsPlatform(BasePlatform):
         b = browser_name.lower().strip()
         probes = {
             "chrome": ["chrome.exe", "google-chrome"],
+            "brave": ["brave.exe", "brave"],
             "chromium": ["chromium.exe", "chromium"],
             "edge": ["msedge.exe", "edge.exe"],
             "firefox": ["firefox.exe", "firefox"]
@@ -587,6 +755,11 @@ class WindowsPlatform(BasePlatform):
                 Path(pf) / "Google" / "Chrome" / "Application" / "chrome.exe",
                 Path(pfx86) / "Google" / "Chrome" / "Application" / "chrome.exe",
                 Path(local_app) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            ],
+            "brave": [
+                Path(pf) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
+                Path(pfx86) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
+                Path(local_app) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe"
             ],
             "edge": [
                 Path(pf) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
@@ -609,7 +782,7 @@ class WindowsPlatform(BasePlatform):
 
     def get_available_browsers(self) -> list:
         browsers = []
-        for b in ["chrome", "chromium", "edge", "firefox"]:
+        for b in ["chrome", "brave", "chromium", "edge", "firefox"]:
             if self._probe_browser_executable(b):
                 browsers.append(b)
         if not browsers:

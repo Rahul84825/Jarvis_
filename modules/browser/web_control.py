@@ -68,5 +68,14 @@ class WebControl:
             logger.error(f"Failed to open website '{site_name}': {e}")
             return False, f"Failed to open website: {e}"
 
+    def open_url(self, url: str) -> bool:
+        """Opens a direct URL using open_website."""
+        success, _ = self.open_website(url)
+        return success
+
 # Global instance
 web_control = WebControl()
+
+def open_url(url: str) -> bool:
+    """Module-level function to open a direct URL."""
+    return web_control.open_url(url)

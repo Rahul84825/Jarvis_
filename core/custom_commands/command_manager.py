@@ -51,9 +51,7 @@ class CommandManager:
             r"^(?:jarvis\s+)?undo\s+(?:the\s+)?(?:last\s+)?command(?:\s+change)?",
             r"^(?:jarvis\s+)?rollback\s+command",
             r"^(?:jarvis\s+)?why\s+did\s+command\s+(?:.+)\s+fail",
-            r"^(?:jarvis\s+)?explain\s+(?:last\s+)?command\s+failure",
-            r"^(?:jarvis\s+)?(?:scan|refresh)\s+(?:installed\s+)?applications",
-            r"^(?:jarvis\s+)?(?:list|show)\s+(?:installed\s+|discovered\s+)?applications"
+            r"^(?:jarvis\s+)?explain\s+(?:last\s+)?command\s+failure"
         ]
         return any(re.search(pat, clean) for pat in patterns)
 
@@ -64,15 +62,7 @@ class CommandManager:
             if clean.startswith(prefix):
                 clean = clean[len(prefix):].strip()
 
-        # 1. Scan applications
-        if any(clean.startswith(p) for p in ["scan applications", "scan installed applications", "refresh applications"]):
-            return self.handle_scan_applications()
-
-        # 2. List applications
-        if any(clean.startswith(p) for p in ["list applications", "list installed applications", "show applications", "show installed applications"]):
-            return self.handle_list_applications()
-
-        # 3. Add command
+        # 1. Add command
         if any(clean.startswith(p) for p in ["add a command", "add command", "create a command", "create command"]):
             return self.handle_create_command(clean, confirm=confirm)
 

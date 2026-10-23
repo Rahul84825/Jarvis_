@@ -1,0 +1,50 @@
+{
+  "baseline": {
+    "use_cache": false,
+    "total_requests": 26,
+    "outbound_api_calls": 26,
+    "exact_hits": 0,
+    "semantic_hits": 0,
+    "bypasses": 0,
+    "misses": 0,
+    "coalesced_avoided": 0,
+    "mean_latency_ms": 408.4204307689036,
+    "p50_latency_ms": 400.6074000008084,
+    "p90_latency_ms": 433.56664999919303,
+    "p99_latency_ms": 439.6662749986717
+  },
+  "cached": {
+    "use_cache": true,
+    "total_requests": 26,
+    "outbound_api_calls": 12,
+    "exact_hits": 8,
+    "semantic_hits": 2,
+    "bypasses": 4,
+    "misses": 11,
+    "coalesced_avoided": 4,
+    "mean_latency_ms": 270.54343461559955,
+    "p50_latency_ms": 400.96559999983583,
+    "p90_latency_ms": 426.1591499998758,
+    "p99_latency_ms": 503.9148749983724
+  },
+  "comparison": {
+    "total_requests_submitted": 26,
+    "eligible_requests": 22,
+    "baseline_outbound_api_calls": 26,
+    "cached_outbound_api_calls": 12,
+    "actual_api_calls_avoided": 14,
+    "api_call_reduction_pct": 53.84615384615385,
+    "exact_hits": 8,
+    "semantic_hits": 2,
+    "single_flight_coalesced_avoided": 4,
+    "cache_bypasses": 4,
+    "cache_misses": 11,
+    "cache_hit_rate_pct": 63.63636363636363,
+    "baseline_mean_latency_ms": 408.4204307689036,
+    "cached_mean_latency_ms": 270.54343461559955,
+    "latency_reduction_pct": 33.758594273487496,
+    "cached_p50_latency_ms": 400.96559999983583,
+    "cached_p90_latency_ms": 426.1591499998758,
+    "cached_p99_latency_ms": 503.9148749983724
+  }
+}

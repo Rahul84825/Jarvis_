@@ -18,6 +18,8 @@ class JarvisUIState(str, Enum):
     THINKING = "THINKING"
     EXECUTING = "EXECUTING"
     SPEAKING = "SPEAKING"
+    SLEEPING = "SLEEPING"
+    WAKING = "WAKING"
     ERROR = "ERROR"
 
 @dataclass
@@ -51,7 +53,7 @@ STATE_CONFIGS = {
     ),
     JarvisUIState.STANDBY: StateVisualConfig(
         title="ONLINE // STANDBY",
-        subtext="SAY 'JARVIS' TO ACTIVATE",
+        subtext="SAY 'SANTRA' TO ACTIVATE",
         primary_color=HUDColors.CYAN_PRIMARY,
         glow_color=HUDColors.CYAN_GLOW,
         rotation_speed=0.5,
@@ -112,6 +114,24 @@ STATE_CONFIGS = {
         pulse_freq=0.12,
         particle_speed=1.6
     ),
+    JarvisUIState.SLEEPING: StateVisualConfig(
+        title="SLEEP MODE // STANDBY",
+        subtext="SAY 'SANTRA' OR CLICK WAKE",
+        primary_color=QColor(70, 120, 210),
+        glow_color=QColor(30, 70, 160, 90),
+        rotation_speed=0.15,
+        pulse_freq=0.015,
+        particle_speed=0.2
+    ),
+    JarvisUIState.WAKING: StateVisualConfig(
+        title="WAKING UP",
+        subtext="RESTORING VOICE PIPELINE",
+        primary_color=HUDColors.CYAN_PRIMARY,
+        glow_color=HUDColors.CYAN_GLOW,
+        rotation_speed=2.2,
+        pulse_freq=0.12,
+        particle_speed=2.0
+    ),
     JarvisUIState.ERROR: StateVisualConfig(
         title="SYSTEM ALERT",
         subtext="ACTION FAILED / RECOVERING",
@@ -126,13 +146,17 @@ STATE_CONFIGS = {
 def map_runtime_status_to_ui_state(status: str) -> JarvisUIState:
     """Maps runtime status strings from core to JarvisUIState."""
     s = (status or "").upper().strip()
+    if "SLEEP" in s:
+        return JarvisUIState.SLEEPING
+    if "WAK" in s:
+        return JarvisUIState.WAKING
     if "LISTEN" in s:
         return JarvisUIState.LISTENING
     if "TRANSCRIB" in s:
         return JarvisUIState.TRANSCRIBING
-    if "THINK" in s or "REASON" in s:
+    if "THINK" in s or "REASON" in s or "SYNTH" in s:
         return JarvisUIState.THINKING
-    if "EXEC" in s or "TOOL" in s or "ACTION" in s:
+    if "EXEC" in s or "TOOL" in s or "ACTION" in s or "PROCESS" in s:
         return JarvisUIState.EXECUTING
     if "SPEAK" in s or "VOICE" in s:
         return JarvisUIState.SPEAKING
@@ -140,6 +164,6 @@ def map_runtime_status_to_ui_state(status: str) -> JarvisUIState:
         return JarvisUIState.ERROR
     if "BOOT" in s or "INIT" in s:
         return JarvisUIState.BOOT
-    if "OFFLINE" in s:
+    if "OFFLINE" in s or "STOP" in s:
         return JarvisUIState.OFFLINE
     return JarvisUIState.STANDBY

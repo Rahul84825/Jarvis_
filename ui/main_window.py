@@ -98,6 +98,8 @@ class MainWindow(QMainWindow):
 
         self.trigger_wakeword_cb = None
         self.toggle_mute_cb = None
+        self.toggle_sleep_cb = None
+        self.speak_cb = None
 
         logger.info("Jarvis 2.0 Holographic HUD initialized.")
 
@@ -172,7 +174,7 @@ class MainWindow(QMainWindow):
 
         self.cmd_input = QLineEdit()
         self.cmd_input.setProperty("class", "cyberInput")
-        self.cmd_input.setPlaceholderText("Command Jarvis (voice or text e.g. 'Open Chrome and search wellmeds.in')...")
+        self.cmd_input.setPlaceholderText("Command Santra (voice or text e.g. 'Open Chrome and search wellmeds.in')...")
         self.cmd_input.returnPressed.connect(self._on_submit_command)
         input_layout.addWidget(self.cmd_input, stretch=1)
 
@@ -180,6 +182,30 @@ class MainWindow(QMainWindow):
         self.btn_execute.setProperty("class", "cyberButton")
         self.btn_execute.clicked.connect(self._on_submit_command)
         input_layout.addWidget(self.btn_execute)
+
+        self.btn_screen = QPushButton("🔍 SCREEN")
+        self.btn_screen.setProperty("class", "cyberButton")
+        self.btn_screen.setToolTip("Analyze and explain visible desktop screen content (Ctrl+Shift+S)")
+        self.btn_screen.clicked.connect(self._open_screen_intelligence)
+        input_layout.addWidget(self.btn_screen)
+
+        self.btn_ai_settings = QPushButton("⚙️ AI")
+        self.btn_ai_settings.setProperty("class", "cyberButton")
+        self.btn_ai_settings.setToolTip("Manage AI providers, API keys, models, and priority (Ctrl+Shift+A)")
+        self.btn_ai_settings.clicked.connect(self._open_ai_settings)
+        input_layout.addWidget(self.btn_ai_settings)
+
+        self.btn_lab = QPushButton("🧪 LAB")
+        self.btn_lab.setProperty("class", "cyberButton")
+        self.btn_lab.setToolTip("Open Santra Virtual Testing Room & Capability Lab (Ctrl+Shift+L)")
+        self.btn_lab.clicked.connect(self._open_virtual_lab)
+        input_layout.addWidget(self.btn_lab)
+
+        self.btn_sleep = QPushButton("🌙 SLEEP")
+        self.btn_sleep.setProperty("class", "cyberButton")
+        self.btn_sleep.setToolTip("Toggle low-resource Sleep Mode (wake with 'Santra' or Wake button)")
+        self.btn_sleep.clicked.connect(self._on_sleep_clicked)
+        input_layout.addWidget(self.btn_sleep)
 
         self.btn_mic = QPushButton("🎙️ TALK")
         self.btn_mic.setProperty("class", "cyberButton")
@@ -197,6 +223,51 @@ class MainWindow(QMainWindow):
         # Spacebar activates voice wake when input is not focused
         self.shortcut_space = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
         self.shortcut_space.activated.connect(self._on_space_pressed)
+
+        # Screen Intelligence shortcut
+        self.shortcut_screen = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
+        self.shortcut_screen.activated.connect(self._open_screen_intelligence)
+
+        # AI Settings shortcut
+        self.shortcut_ai = QShortcut(QKeySequence("Ctrl+Shift+A"), self)
+        self.shortcut_ai.activated.connect(self._open_ai_settings)
+
+        # Virtual Testing Room shortcut
+        self.shortcut_lab = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
+        self.shortcut_lab.activated.connect(self._open_virtual_lab)
+
+    def _open_screen_intelligence(self):
+        try:
+            from ui.panels.screen_intelligence_panel import ScreenIntelligencePanel
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout
+            dialog = QDialog(self)
+            dialog.setWindowTitle("SANTRA — Visual Screen Intelligence")
+            dialog.resize(760, 560)
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(10, 10, 10, 10)
+            from core.ai.provider_manager import ProviderManager
+            prov_mgr = getattr(self, "provider_manager", None) or ProviderManager()
+            panel = ScreenIntelligencePanel(dialog, on_speech_output_cb=getattr(self, "speak_cb", None), provider_manager=prov_mgr)
+            layout.addWidget(panel)
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"Failed to open Screen Intelligence: {e}")
+
+    def _open_ai_settings(self):
+        try:
+            from ui.panels.ai_settings_dialog import AISettingsDialog
+            dialog = AISettingsDialog(self)
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"Failed to open AI Settings: {e}")
+
+    def _open_virtual_lab(self):
+        try:
+            from ui.panels.virtual_lab_panel import VirtualLabDialog
+            dialog = VirtualLabDialog(self)
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"Failed to open Virtual Lab: {e}", exc_info=True)
 
     def _on_space_pressed(self):
         if not self.cmd_input.hasFocus():
@@ -306,7 +377,11 @@ class MainWindow(QMainWindow):
 
         # Top-Right Status Line with Pulsing Dot
         state_color = HUDColors.STANDBY_CYAN
-        if self._current_state in [JarvisUIState.LISTENING, JarvisUIState.TRANSCRIBING]:
+        if self._current_state == JarvisUIState.SLEEPING:
+            state_color = QColor(100, 160, 255)
+        elif self._current_state == JarvisUIState.WAKING:
+            state_color = HUDColors.CYAN_PRIMARY
+        elif self._current_state in [JarvisUIState.LISTENING, JarvisUIState.TRANSCRIBING]:
             state_color = HUDColors.LISTENING_CYAN
         elif self._current_state in [JarvisUIState.UNDERSTANDING, JarvisUIState.THINKING, JarvisUIState.EXECUTING]:
             state_color = HUDColors.THINKING_GOLD
@@ -391,7 +466,7 @@ class MainWindow(QMainWindow):
         font_hint.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.8)
         painter.setFont(font_hint)
         painter.setPen(QColor(0, 229, 255, 95))
-        hint_text = 'SAY "HEY JARVIS" • SPACE TO TALK • ENTER TO COMMAND • V VOICE ENGINE'
+        hint_text = 'SAY "HEY SANTRA" • SPACE TO TALK • ENTER TO COMMAND • V VOICE ENGINE'
         painter.drawText(0, h - 28, w, 20, Qt.AlignmentFlag.AlignCenter, hint_text)
 
     def _on_boot_finished(self):
@@ -442,11 +517,22 @@ class MainWindow(QMainWindow):
         if self.trigger_wakeword_cb:
             self.trigger_wakeword_cb()
 
+    def _on_sleep_clicked(self):
+        if self._current_state == JarvisUIState.SLEEPING:
+            self._on_wake_clicked()
+        elif self.toggle_sleep_cb:
+            self.toggle_sleep_cb()
+        else:
+            self.sig_command_submitted.emit("enter sleep mode")
+
     def _on_submit_command(self):
         cmd = self.cmd_input.text().strip()
         if cmd:
             self.cmd_input.clear()
             self._add_turn("user", cmd)
+            if cmd.lower() in ["open virtual lab", "open virtual testing room", "virtual lab", "virtual testing room", "test lab"]:
+                self._open_virtual_lab()
+                return
             self.sig_command_submitted.emit(cmd)
 
     def _add_turn(self, role: str, text: str):
@@ -482,13 +568,25 @@ class MainWindow(QMainWindow):
                     letter-spacing: 0.03em;
                     background: transparent;
                 """)
-                lbl.setText(f"JARVIS  ➜  {turn['text']}")
+                lbl.setText(f"SANTRA  ➜  {turn['text']}")
             self.log_layout.addWidget(lbl)
 
     def _on_status_changed(self, status: str):
         self._status_text = status.upper()
         self._current_state = map_runtime_status_to_ui_state(status)
         self.arc_reactor.set_state(self._current_state)
+
+        # Modulate buttons based on sleep vs active state
+        if self._current_state == JarvisUIState.SLEEPING:
+            self.btn_mic.setText("⚡ WAKE")
+            self.btn_mic.setToolTip("Wake SANTRA from Sleep Mode")
+            self.btn_sleep.setText("⚡ WAKE")
+            self.btn_sleep.setToolTip("Wake SANTRA from Sleep Mode")
+        else:
+            self.btn_mic.setText("🎙️ TALK")
+            self.btn_mic.setToolTip("Activate voice listening")
+            self.btn_sleep.setText("🌙 SLEEP")
+            self.btn_sleep.setToolTip("Put SANTRA into low-resource Sleep Mode")
 
         # Modulate signal meter level based on state
         if self._current_state in [JarvisUIState.LISTENING, JarvisUIState.TRANSCRIBING]:
@@ -498,6 +596,9 @@ class MainWindow(QMainWindow):
             self._target_signal_level = 0.90
         elif self._current_state in [JarvisUIState.THINKING, JarvisUIState.UNDERSTANDING]:
             self._target_signal_level = 0.75
+        elif self._current_state == JarvisUIState.SLEEPING:
+            self._target_signal_level = 0.10
+            self.lbl_caption.hide()
         else:
             self._target_signal_level = 0.35
             self.lbl_caption.hide()
@@ -546,7 +647,7 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Security Authorization Required",
-            f"Jarvis is requesting confirmation to execute:\n\nAction: {action}\nDetails: {message}\n\nDo you authorize this operation?",
+            f"Santra is requesting confirmation to execute:\n\nAction: {action}\nDetails: {message}\n\nDo you authorize this operation?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )

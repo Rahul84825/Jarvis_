@@ -42,6 +42,15 @@ class MultiCommandParser:
         if not clean:
             clean = raw
 
+        # Guard: Unified research and explain or AI reasoning queries should remain a single sentence
+        clean_lower = clean.lower()
+        if re.search(r"\b(?:find|search)\b.*\band\b\s*(?:explain|summarize|tell)\b", clean_lower, re.IGNORECASE):
+            return [clean]
+        if re.search(r"\b(?:explain|solve|write|debug|compare)\b.*\band\b", clean_lower, re.IGNORECASE):
+            return [clean]
+        if re.search(r"\b(?:ask|tell|have)\s+(?:nvidia|nemotron)\b", clean_lower, re.IGNORECASE):
+            return [clean]
+
         # Normalize delimiter separators: 'after that', 'then', 'also'
         norm = clean
         norm = re.sub(r'[,;\s]*\b(after that|then|also)\b', '|', norm, flags=re.IGNORECASE)

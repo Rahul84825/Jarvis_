@@ -82,7 +82,7 @@ class BootOverlayWidget(QWidget):
             painter.setPen(QPen(QColor(0, 240, 255, int(240 * self._alpha))))
             font_title = QFont("Segoe UI Variable", 16, QFont.Weight.Bold)
             painter.setFont(font_title)
-            painter.drawText(int(cx - 180), int(cy - 90), "INITIATING JARVIS AI CORE...")
+            painter.drawText(int(cx - 180), int(cy - 90), "INITIATING SANTRA AI CORE...")
 
             # Segmented Progress Bar
             num_cells = 24

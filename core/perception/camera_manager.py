@@ -10,7 +10,9 @@ import logging
 import threading
 from typing import Optional, List, Dict, Any, Callable, Tuple
 import numpy as np
-from PIL import Image
+from core.lazy_loader import lazy_import
+
+Image = lazy_import("PIL.Image")
 
 from core.perception.vision_config import vision_config, VisionConfig
 from core.perception.perception_events import (

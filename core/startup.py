@@ -118,3 +118,19 @@ def disable_startup() -> bool:
     except Exception as e:
         logger.error(f"Error deleting Windows registry startup entry: {e}", exc_info=True)
         return False
+
+def get_startup_status() -> dict:
+    """Returns a structured status dictionary describing current startup configuration."""
+    enabled = is_startup_enabled()
+    cmd = get_app_command()
+    return {
+        "enabled": enabled,
+        "command": cmd,
+        "platform": "windows" if IS_WINDOWS else "unsupported",
+        "message": (
+            "Santra is configured to start automatically with Windows in minimized tray mode."
+            if enabled else
+            "Automatic Windows startup is currently disabled."
+        )
+    }
+

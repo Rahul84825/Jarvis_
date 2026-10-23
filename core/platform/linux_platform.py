@@ -277,6 +277,7 @@ class LinuxPlatform(BasePlatform):
         b = browser_name.lower().strip()
         probes = {
             "chrome": ["google-chrome", "google-chrome-stable"],
+            "brave": ["brave-browser", "brave"],
             "chromium": ["chromium-browser", "chromium"],
             "firefox": ["firefox"],
             "edge": ["microsoft-edge", "microsoft-edge-dev"]
@@ -290,7 +291,7 @@ class LinuxPlatform(BasePlatform):
 
     def get_available_browsers(self) -> list:
         browsers = []
-        for b in ["chrome", "chromium", "firefox", "edge"]:
+        for b in ["chrome", "brave", "chromium", "firefox", "edge"]:
             if self._probe_browser_executable(b):
                 browsers.append(b)
         if not browsers:

@@ -5,6 +5,9 @@ import logging
 from typing import Optional, List, Dict, Any
 from core.tts.base_tts import BaseTTS
 from config import config
+from core.lazy_loader import lazy_import
+
+edge_tts = lazy_import("edge_tts")
 
 logger = logging.getLogger("Jarvis.EdgeTTSProvider")
 
@@ -17,17 +20,15 @@ class EdgeTTSProvider(BaseTTS):
     def synthesize_to_file(self, text: str) -> Optional[str]:
         if not text or not text.strip():
             return None
-
-        import edge_tts
-        voice = getattr(config, "tts_voice", "en-US-GuyNeural")
+        voice = getattr(config, "tts_voice", "en-GB-RyanNeural")
         rate = getattr(config, "tts_rate", "+0%")
-        pitch = getattr(config, "tts_pitch", "+0Hz")
-        volume = getattr(config, "tts_volume", "+0%")
+        pitch = getattr(config, "tts_pitch", "-2Hz")
+        volume = getattr(config, "tts_volume", "-20%")
 
         fd, temp_path = tempfile.mkstemp(suffix=".mp3", prefix="jarvis_edge_tts_")
         os.close(fd)
 
-        timeout_ms = getattr(config, "tts_cloud_timeout_ms", 1500)
+        timeout_ms = getattr(config, "tts_cloud_timeout_ms", 6500)
         timeout_s = max(0.2, timeout_ms / 1000.0)
 
         async def _run_synthesis():

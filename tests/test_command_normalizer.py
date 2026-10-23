@@ -7,6 +7,8 @@ class TestCommandNormalizer(unittest.TestCase):
 
     def test_polite_phrases_and_wake_words(self):
         test_cases = [
+            ("Santra please open Chrome", "open chrome"),
+            ("Hey Santra open Chrome", "open chrome"),
             ("Jarvis please open Chrome", "open chrome"),
             ("Could you launch Chrome", "open chrome"),
             ("Please lock my PC", "lock computer"),

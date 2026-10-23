@@ -68,15 +68,15 @@ class TestCommandExecutor(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertIn("blocked", result["message"].lower())
 
-    @patch('modules.system.app_control.open_app')
-    def test_executor_low_risk_direct(self, mock_open):
+    @patch('modules.system.app_control.launch_application')
+    def test_executor_low_risk_direct(self, mock_launch):
         """6. Verify Executor routes LOW risk actions without confirmation."""
-        mock_open.return_value = True
+        mock_launch.return_value = {"success": True, "message": "Chrome is open, Sir."}
         intent = {"intent": "open_app", "target": "chrome", "query": "open chrome"}
         
         result = self.executor.execute(intent, confirm=False)
         self.assertTrue(result["success"])
-        mock_open.assert_called_once_with("chrome")
+        mock_launch.assert_called_once_with("chrome")
         
         # Verify history is populated
         self.assertEqual(len(self.history.get_history()), 1)

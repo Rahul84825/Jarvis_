@@ -9,6 +9,9 @@ from modules.browser.web_control import web_control
 from core.apps.application_discovery import app_discovery
 from core.custom_commands.command_manager import command_manager
 from core.custom_commands.command_registry import custom_command_registry
+from memory.persistent_memory import persistent_memory
+from core.os.browser_intent import BrowserIntentParser, BrowserActionType
+from core.os.browser_session import browser_session_manager
 
 logger = logging.getLogger("Jarvis.IntentEngine")
 
@@ -31,6 +34,7 @@ class IntentEngine:
         self.apps_json_path = Path(__file__).parent.parent / "config" / "applications.json"
         self.app_aliases = self._load_app_aliases()
         self.last_app_target = None
+        self.browser_intent_parser = BrowserIntentParser()
 
     def _load_app_aliases(self) -> dict:
         """Loads canonical application definitions and spoken aliases from applications.json."""
@@ -48,11 +52,29 @@ class IntentEngine:
         return aliases_map
 
     def resolve_app_name(self, raw: str) -> str:
-        """Resolves raw application name or alias to canonical application key."""
+        """Resolves raw application name or alias to canonical application key, checking generic preferences and learned aliases."""
         if not raw:
             return ""
         clean = raw.lower().strip()
-        # Direct lookup in alias registry
+
+        # Check generic concepts and learned aliases first (Phase 4 & 6)
+        try:
+            if clean in ["browser", "web browser", "internet"]:
+                learned_browser = persistent_memory.get_user_learned_preference("browser_preference", "default_browser") or persistent_memory.get_preference("preferred_browser")
+                if learned_browser:
+                    return learned_browser
+            elif clean in ["editor", "text editor", "code editor"]:
+                learned_editor = persistent_memory.get_user_learned_preference("editor_preference", "default_editor") or persistent_memory.get_preference("preferred_editor")
+                if learned_editor:
+                    return learned_editor
+
+            learned_alias = persistent_memory.get_user_learned_preference("app_alias", clean)
+            if learned_alias:
+                return learned_alias
+        except Exception:
+            pass
+
+        # Direct lookup in alias registry (canonical applications on OS: chrome, notepad, etc.)
         if clean in self.app_aliases:
             return self.app_aliases[clean]
 
@@ -67,9 +89,24 @@ class IntentEngine:
 
         return clean
 
-    def _resolve_search_provider_and_query(self, query: str) -> tuple[str, str, str]:
-        """Resolves target provider, clean target, and exact query from extracted search query string."""
+    def _resolve_search_provider_and_query(self, query: str) -> tuple[str, str, str, str]:
+        """Resolves target provider, clean target, exact query, and browser from extracted search query string.
+        Returns: (provider, target_q, exact_q, browser)
+        """
         q_strip = query.strip()
+        browser = "default"
+
+        # 0. Check explicit browser postfix: "... in chrome", "... using brave", "... on brave", "... in brave"
+        b_postfix_m = re.search(r"\b(?:in|using|with|on)\s+(chrome|chromium|edge|firefox|brave|opera)\s*$", q_strip, re.IGNORECASE)
+        if b_postfix_m:
+            browser = b_postfix_m.group(1).lower()
+            q_strip = q_strip[:b_postfix_m.start()].strip()
+
+        # Check explicit browser prefix: "brave for ...", "in brave for ...", "chrome for ..."
+        b_prefix_m = re.match(r"^(?:in\s+|using\s+|on\s+)?(chrome|chromium|edge|firefox|brave|opera)\s+for\s+(.+)$", q_strip, re.IGNORECASE | re.DOTALL)
+        if b_prefix_m:
+            browser = b_prefix_m.group(1).lower()
+            q_strip = b_prefix_m.group(2).strip()
 
         # 1. Targeted site postfix: "search for Python tutorials on YouTube"
         on_match = re.match(r"^(?:for\s+)?(.+?)\s+on\s+(youtube|github|reddit|stackoverflow|stack overflow|google)$", q_strip, re.IGNORECASE)
@@ -78,17 +115,17 @@ class IntentEngine:
             if prov == "stack overflow":
                 prov = "stackoverflow"
             extracted = on_match.group(1).strip()
-            return prov, extracted.lower(), extracted
+            return prov, extracted.lower(), extracted, browser
 
         # 2. Local project code search: "search my project for ...", "search this project for ..."
         proj_match = re.match(r"^(?:in\s+|for\s+)?(?:my\s+|this\s+)?project\s+for\s+(.+)$", q_strip, re.IGNORECASE)
         if proj_match:
             extracted = proj_match.group(1).strip()
-            return "project", extracted, extracted
+            return "project", extracted, extracted, browser
 
         # 3. Provider prefixes: "YouTube for ...", "for YouTube ...", "GitHub for ...", etc.
         prov_patterns = [
-            (r"^(?:for\s+)?(?:google|chrome|the web)\s+for\s+(.+)$", "google"),
+            (r"^(?:for\s+)?(?:google|the web|web)\s+for\s+(.+)$", "google"),
             (r"^(?:for\s+)?(?:youtube)\s+for\s+(.+)$", "youtube"),
             (r"^(?:for\s+)?(?:github)\s+for\s+(.+)$", "github"),
             (r"^(?:for\s+)?(?:reddit)\s+for\s+(.+)$", "reddit"),
@@ -98,14 +135,23 @@ class IntentEngine:
             m = re.match(pat, q_strip, re.IGNORECASE | re.DOTALL)
             if m:
                 extracted = m.group(1).strip()
-                return prov, extracted.lower(), extracted
+                return prov, extracted.lower(), extracted, browser
 
         # 4. Clean leading "for " or "about " from general queries while preserving original casing
         clean_q = re.sub(r"^(?:for|about)\s+", "", q_strip, flags=re.IGNORECASE).strip()
-        return "google", clean_q, clean_q
+        clean_q = re.sub(r"^(?:the\s+web\s+for|web\s+for)\s+", "", clean_q, flags=re.IGNORECASE).strip()
+        return "google", clean_q.lower(), clean_q, browser
 
     def _is_informational_query(self, raw_text: str, clean_text: str) -> bool:
         """Strictly identifies questions and informational queries that must NOT trigger actions."""
+        # Bypass for desktop screen intelligence, explain engine, and file queries
+        if re.search(r"^explain\s+(?:my\s+screen|this\s+page|the\s+screen|this\s+code|this\s+error|this\s+graph|this\s+pdf|point\s+\d+|the\s+\w+\s+point|this\s+like|it\s+with|the\s+second|the\s+third|the\s+first)\b", clean_text, re.IGNORECASE):
+            return False
+        if re.search(r"^(?:where\s+did\s+i\s+save|where\s+is\s+my\s+.*(?:program|file|code|repository|project)|search\s+my\s+files)\b", clean_text, re.IGNORECASE):
+            return False
+        if re.search(r"^(?:what\s+are\s+the\s+important\s+points|what\s+does\s+this\s+error\s+mean|what\s+is\s+this\s+button\s+used\s+for|compare\s+these\s+two)\b", clean_text, re.IGNORECASE):
+            return False
+
         if re.search(r"^explain\s+(?:this\s+)?(?:python\s+)?error\b", clean_text, re.IGNORECASE) or re.search(r"^explain\s+what\s+tools\b", clean_text, re.IGNORECASE):
             return False
 
@@ -151,7 +197,42 @@ class IntentEngine:
         clean = norm_res["normalized"].lower().strip()
 
         # -------------------------------------------------------------
-        # 0. EXPLICIT SEARCH INTENT (HIGHEST PRIORITY)
+        # 0. UNIVERSAL INTENT-BASED BROWSER & WEBSITE AUTOMATION (PHASE 8)
+        # -------------------------------------------------------------
+        try:
+            b_ctx = browser_session_manager.get_context_for_parser()
+            b_res = self.browser_intent_parser.parse(effective_raw, session_context=b_ctx)
+            if b_res.action_type != BrowserActionType.UNKNOWN:
+                logger.info(f"[BROWSER_INTENT] Matched '{b_res.action_type.value}' for '{effective_raw}'")
+                return b_res.to_dict()
+        except Exception as b_err:
+            logger.debug(f"[BROWSER_INTENT] Parser error: {b_err}")
+
+        # -------------------------------------------------------------
+        # 0A. DEDICATED YOUTUBE SEARCH INTENT (TOP PRECEDENCE)
+        # -------------------------------------------------------------
+        is_yt, yt_query, yt_browser = self.normalizer.extract_youtube_search(effective_raw)
+        if not is_yt and clean:
+            is_yt, yt_query, yt_browser = self.normalizer.extract_youtube_search(clean)
+
+        if is_yt:
+            clean_yt = yt_query.strip()
+            logger.info(f"[SEARCH] Dedicated YouTube search intent recognized. Query: '{clean_yt}', Browser: '{yt_browser}'")
+            return {
+                "intent": "web_search",
+                "action": "search",
+                "provider": "youtube",
+                "target": clean_yt,
+                "query": clean_yt,
+                "browser": yt_browser,
+                "empty_query": not bool(clean_yt),
+                "confidence": 1.0,
+                "raw_text": effective_raw,
+                "is_explicit_search": True
+            }
+
+        # -------------------------------------------------------------
+        # 0B. GENERAL EXPLICIT SEARCH INTENT (HIGHEST PRIORITY)
         # -------------------------------------------------------------
         # Must be evaluated BEFORE question classification, local fallback, or other commands.
         is_search, extracted_query = self.normalizer.extract_explicit_search(effective_raw)
@@ -163,6 +244,26 @@ class IntentEngine:
             logger.info("[SEARCH] Explicit search prefix detected")
             logger.info(f"[SEARCH] Original input: '{effective_raw}'")
             logger.info(f"[SEARCH] Extracted query: '{clean_query}'")
+
+            # Check for in-app search destination: "in this application", "in the current app", etc.
+            m_app_search = re.search(r"\b(?:in|on)\s+(?:this\s+application|this\s+app|the\s+current\s+application|current\s+app)\s*$", clean_query, re.IGNORECASE)
+            if not m_app_search:
+                m_app_search = re.search(r"\b(?:in|on)\s+(chatgpt)\s*$", clean_query, re.IGNORECASE)
+            if m_app_search:
+                dest_found = m_app_search.group(1).lower() if m_app_search.lastindex and m_app_search.group(1) else "current_application"
+                app_q = clean_query[:m_app_search.start()].strip()
+                app_q = re.sub(r"^(?:for|about)\s+", "", app_q, flags=re.IGNORECASE).strip()
+                logger.info(f"[DESKTOP] Explicit in-app search detected: query='{app_q}', destination='{dest_found}'")
+                return {
+                    "intent": "desktop_interaction.search_app",
+                    "action": "search_in_app",
+                    "query": app_q,
+                    "text": app_q,
+                    "target": app_q,
+                    "destination": dest_found,
+                    "confidence": 0.98,
+                    "raw_text": effective_raw
+                }
 
             if not clean_query:
                 logger.info("[SEARCH] Route selected: BrowserManager.search (Empty query clarification)")
@@ -178,7 +279,7 @@ class IntentEngine:
                     "is_explicit_search": True
                 }
 
-            prov, target_q, exact_q = self._resolve_search_provider_and_query(clean_query)
+            prov, target_q, exact_q, browser_target = self._resolve_search_provider_and_query(clean_query)
             if prov == "project":
                 logger.info(f"[SEARCH] Route selected: Local code search ({exact_q})")
                 return {
@@ -191,12 +292,13 @@ class IntentEngine:
                     "is_explicit_search": True
                 }
 
-            logger.info(f"[SEARCH] Route selected: BrowserManager.search ({prov})")
+            logger.info(f"[SEARCH] Route selected: BrowserManager.search ({prov}) | Browser: '{browser_target}'")
             return {
                 "intent": "web_search",
                 "action": "search",
                 "provider": prov,
-                "target": target_q,
+                "browser": browser_target,
+                "target": exact_q,
                 "query": exact_q,
                 "empty_query": False,
                 "confidence": 1.0,
@@ -305,11 +407,11 @@ class IntentEngine:
         # -------------------------------------------------------------
         # 2. TIME & DATE INTENTS
         # -------------------------------------------------------------
-        time_triggers = ["what time is it", "what's the time", "tell me the time", "current time", "what is the time", "time now", "time"]
-        if clean in time_triggers or any(clean.startswith(t) for t in ["what time", "tell me the time"]):
+        time_triggers = ["what time is it", "what's the time", "tell me the time", "current time", "what is the time", "time now", "time", "the time", "what time do you have"]
+        if clean in time_triggers or any(clean.startswith(t) for t in ["what time", "tell me what time", "tell me the time", "current time", "what is the current time"]):
             return {"intent": "time_query", "action": "get_time", "target": None, "confidence": 0.98, "query": clean, "raw_text": raw_text}
 
-        if any(kw in clean for kw in ["today s date", "todays date", "today date", "what is the date", "what is today's date", "what day is it", "current date", "what is today", "which day is today", "what date is"]):
+        if any(kw in clean for kw in ["today s date", "todays date", "today date", "what is the date", "what is today's date", "what day is it", "current date", "what is today", "which day is today", "what date is", "tell me the date", "tell me today's date", "tell me todays date", "date today"]):
             return {"intent": "date_query", "action": "get_date", "target": None, "confidence": 0.98, "query": clean, "raw_text": raw_text}
 
         # -------------------------------------------------------------
@@ -327,15 +429,157 @@ class IntentEngine:
 
 
         # -------------------------------------------------------------
-        # 4. IDENTITY, HELP & ABOUT INTENTS
+        # 4. IDENTITY, PERSONALITY, HUMOR & DYNAMIC HELP INTENTS
         # -------------------------------------------------------------
+        raw_clean = effective_raw.lower().strip()
+
+        # 4.1 Personality & Tone Controls
+        # Tone adjustments
+        if any(p in clean or p in raw_clean for p in ["be more funny", "be funny", "talk funny", "more jokes", "tell more jokes"]):
+            return {"intent": "social_personality", "action": "set_tone", "target": "funny", "tone": "funny", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(p in clean or p in raw_clean for p in ["stop being sarcastic", "be professional", "talk professionally", "professional mode", "act professional"]):
+            return {"intent": "social_personality", "action": "set_tone", "target": "professional", "tone": "professional", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(p in clean or p in raw_clean for p in ["talk casually", "be casual", "use your normal personality", "be normal", "normal personality", "reset personality", "normal tone"]):
+            return {"intent": "social_personality", "action": "set_tone", "target": "normal", "tone": "normal", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(p in clean or p in raw_clean for p in ["be more dramatic", "be dramatic", "be futuristic", "be more futuristic", "futuristic style", "dramatic mode"]):
+            return {"intent": "social_personality", "action": "set_tone", "target": "dramatic", "tone": "dramatic", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # Response length
+        if any(p in clean or p in raw_clean for p in ["keep it short", "be concise", "short responses", "keep responses short", "be brief"]):
+            return {"intent": "social_personality", "action": "set_length", "target": "concise", "length": "concise", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if not ("short answer" in clean or "short answer" in raw_clean) and any(p in clean or p in raw_clean for p in ["explain things in detail", "be detailed", "give detailed responses", "be more detailed", "explain in detail"]):
+            return {"intent": "social_personality", "action": "set_length", "target": "detailed", "length": "detailed", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # Humor toggle
+        if any(p in clean or p in raw_clean for p in ["don't tell jokes", "dont tell jokes", "don t tell jokes", "disable humor", "turn off humor", "stop telling jokes", "no jokes", "no more jokes"]):
+            return {"intent": "social_personality", "action": "toggle_humor", "target": "disable", "humor": False, "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(p in clean or p in raw_clean for p in ["enable humor", "turn on humor", "start telling jokes", "allow humor"]):
+            return {"intent": "social_personality", "action": "toggle_humor", "target": "enable", "humor": True, "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # 4.2 Humor, Jokes, Roasts & Fun Facts
+        # Follow-up "another one"
+        if clean in ["another one", "tell me another", "give me another", "give me another one", "one more", "tell another", "another"] or clean.startswith("another ") or raw_clean.startswith("another "):
+            return {"intent": "social_humor", "action": "followup", "target": "another", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # Roasts
+        if any(r in clean or r in raw_clean for r in ["roast my code", "roast this code", "roast the code", "roast code"]):
+            return {"intent": "social_humor", "action": "roast", "target": "code", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(r in clean or r in raw_clean for r in ["roast me", "give me a savage reply", "be savage", "be sarcastic", "savage reply", "give me a roast"]):
+            return {"intent": "social_humor", "action": "roast", "target": "user", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # Fun Facts & Trivia
+        if any(f in clean or f in raw_clean for f in [
+            "tell me a random fun fact", "tell me a fun fact", "give me a tech fact", 
+            "give me a fun fact", "tell me a fact", "fun fact", "random fact", 
+            "tech fact", "tell me something interesting"
+        ]):
+            cat = "tech" if "tech" in clean or "tech" in raw_clean else None
+            return {"intent": "social_humor", "action": "fun_fact", "category": cat, "target": "fact", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # Dramatic Introduction
+        if any(d in clean or d in raw_clean for d in [
+            "introduce yourself dramatically", "say something that sounds like a futuristic ai", 
+            "dramatic introduction", "dramatic intro", "introduce yourself"
+        ]):
+            return {"intent": "social_humor", "action": "dramatic_intro", "target": "intro", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # Jokes by category
+        if any(j in clean or j in raw_clean for j in [
+            "tell me a programming joke", "tell me a coding joke", "make a joke about programmers", 
+            "coding joke", "programming joke", "give me a programming joke", "tell a programming joke"
+        ]):
+            return {"intent": "social_humor", "action": "tell_joke", "category": "programming", "target": "programming", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(j in clean or j in raw_clean for j in ["tell me a dark joke", "dark joke", "give me a dark joke"]):
+            return {"intent": "social_humor", "action": "tell_joke", "category": "dark", "target": "dark", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(j in clean or j in raw_clean for j in [
+            "tell me a nerdy joke", "give me a nerdy joke", "tell me a tech joke", 
+            "tech joke", "nerdy joke"
+        ]):
+            return {"intent": "social_humor", "action": "tell_joke", "category": "tech", "target": "tech", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if clean == "joke" or raw_clean == "joke" or any(j in clean or j in raw_clean for j in [
+            "tell me a joke", "tell a joke", "make me laugh", "say something funny", 
+            "tell me another joke", "tell another joke", "crack a joke", "another joke"
+        ]):
+            return {"intent": "social_humor", "action": "tell_joke", "category": None, "target": "general", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # 4.3 Casual Conversation Queries
+        if any(b in clean or b in raw_clean for b in ["i'm bored", "im bored", "i am bored", "feeling bored"]):
+            return {"intent": "social_chat", "action": "bored", "target": "bored", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(g in clean or g in raw_clean for g in ["guess what", "guess what?"]):
+            return {"intent": "social_chat", "action": "guess_what", "target": "guess_what", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(s in clean or s in raw_clean for s in ["surprise me", "surprise me!"]):
+            return {"intent": "social_chat", "action": "surprise_me", "target": "surprise_me", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(t in clean or t in raw_clean for t in ["let's talk", "lets talk"]):
+            return {"intent": "social_chat", "action": "lets_talk", "target": "lets_talk", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(m in clean or m in raw_clean for m in ["nice to meet you", "good to see you", "pleasure to meet you"]):
+            return {"intent": "social_chat", "action": "nice_to_meet", "target": "nice_to_meet", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # 4.4 Identity & Truthful Self-Awareness Queries
+        if any(q in clean or q in raw_clean for q in ["what does santra stand for", "what's santra stand for", "what does jarvis stand for", "what's jarvis stand for", "what does stand for", "what does the name santra stand for", "what does the name jarvis stand for", "what does your name stand for", "santra acronym", "jarvis acronym", "full form of santra", "full form of jarvis", "stand for"]):
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "acronym", "target": "acronym", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(q in clean or q in raw_clean for q in ["who created you", "who built you", "who is your developer", "who developed you", "who made you", "who is your creator", "who designed you"]):
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "creator", "target": "creator", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(q in clean or q in raw_clean for q in ["what is your purpose", "what's your purpose", "what is your objective", "what are you for", "why were you created"]):
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "purpose", "target": "purpose", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(q in clean or q in raw_clean for q in ["are you a real person", "are you an ai", "are you real", "are you human", "are you a bot", "are you a robot"]):
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "ai_nature", "target": "ai_nature", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(q in clean or q in raw_clean for q in ["are you like chatgpt", "what makes you different", "how are you different from chatgpt", "difference between you and chatgpt", "are you chatgpt"]):
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "chatgpt_comparison", "target": "chatgpt_comparison", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(q in clean or q in raw_clean for q in ["what makes you intelligent", "how are you intelligent", "how do you work", "what is your architecture"]):
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "intelligence_architecture", "target": "intelligence_architecture", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(q in clean or q in raw_clean for q in ["are you always listening", "are you recording me", "do you store my voice", "what about my privacy", "how do you listen"]):
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "listening_privacy", "target": "listening_privacy", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(clean == q or clean.startswith(q + " ") or raw_clean == q or raw_clean.startswith(q + " ") for q in ["can you hear me", "can you hear me santra", "can you hear me jarvis", "hear me"]):
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "can_you_hear_me", "target": "can_you_hear_me", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(q in clean or q in raw_clean for q in ["can you control my computer", "can you control this pc", "can you control the computer"]):
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "computer_control", "target": "computer_control", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(q in clean or q in raw_clean for q in ["can you work without internet", "can you work without the internet", "can you work offline", "do you work offline", "do you need internet", "work without internet"]):
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "offline_work", "target": "offline_work", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
         identity_queries = [
-            "who are you", "who made you", "who built you", "who created you", 
-            "who developed you", "who owns you", "who is your developer", 
-            "who is your creator", "what is your name"
+            "who are you", "who owns you", "what is your name", "what's your name", "tell me about yourself"
         ]
         if any(iq in clean for iq in identity_queries):
-            return {"intent": "identity", "action": "explain_identity", "target": None, "confidence": 0.98, "query": clean, "raw_text": raw_text}
+            return {"intent": "identity", "action": "explain_identity", "sub_type": "general", "target": "general", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # 4.5 Dynamic Help & Capability Queries
+        # Specific capability inquiries
+        if any(clean == q or clean.startswith(q + " ") for q in ["can you search youtube", "can you search youtube for videos", "do you support youtube search", "can you use youtube"]):
+            return {"intent": "help", "action": "explain_capability", "scope": "youtube", "target": "youtube", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(clean == q or clean.startswith(q + " ") for q in ["can you open applications", "can you launch apps", "can you open apps", "can you open programs"]):
+            return {"intent": "help", "action": "explain_capability", "scope": "applications", "target": "applications", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(clean == q or clean.startswith(q + " ") for q in ["can you search the web", "can you search google", "can you search internet", "can you search online"]):
+            return {"intent": "help", "action": "explain_capability", "scope": "search", "target": "search", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(clean == q or clean.startswith(q + " ") for q in ["what can you do offline", "what can santra do offline", "what can jarvis do offline", "offline capabilities", "what can you do without internet", "show offline features"]):
+            return {"intent": "help", "action": "explain_capability", "scope": "offline", "target": "offline", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if any(clean == q or clean.startswith(q + " ") for q in ["what features are currently unavailable", "what is unavailable", "unavailable features", "what features are disabled"]):
+            return {"intent": "help", "action": "explain_capability", "scope": "unavailable", "target": "unavailable", "confidence": 0.98, "query": clean, "raw_text": raw_text}
 
         raw_lower = raw_text.lower().strip('?!. ')
 
@@ -379,19 +623,23 @@ class IntentEngine:
                 "raw_text": raw_text
             }
 
-        help_queries = [
-            "help", "help me", "what can you do", "what can jarvis do", "what do you do", "what do",
+        help_exact = {
+            "help", "help me", "what can you do", "what can santra do", "what can jarvis do", "what do you do",
             "what are your capabilities", "what commands do you know", "show commands", 
             "commands", "capabilities", "show capabilities", "show me your capabilities",
             "what are your features", "how can you help me", "how can you help",
             "list commands", "list capabilities"
-        ]
+        }
+        help_prefixes = (
+            "show commands", "list commands", "show capabilities", "list capabilities",
+            "show me your capabilities", "what are your capabilities", "what can you do"
+        )
         is_action_request = any(clean.startswith(f"help me {v}") or raw_lower.startswith(f"help me {v}") for v in ["open", "launch", "start", "close", "find", "search", "run", "play"])
-        if not is_action_request and (clean in help_queries or raw_lower in help_queries or any(clean == hq or clean.startswith(hq + " ") or raw_lower == hq or raw_lower.startswith(hq + " ") for hq in help_queries)):
+        if not is_action_request and (clean in help_exact or raw_lower in help_exact or any(clean.startswith(hp) for hp in help_prefixes)):
             return {"intent": "help", "action": "show_help", "target": None, "scope": "overview", "confidence": 0.98, "query": clean, "raw_text": raw_text}
 
         about_queries = [
-            "about", "about goliya", "about jarvis", "version", 
+            "about", "about santra", "about goliya", "about jarvis", "version", 
             "system info", "system information", "system details"
         ]
         if clean in about_queries:
@@ -412,6 +660,10 @@ class IntentEngine:
             return {"intent": "system_telemetry", "action": "ip_info", "target": None, "confidence": 0.95, "query": clean, "raw_text": raw_text}
         if "system uptime" in clean or "how long has the system" in clean or "system running" in clean:
             return {"intent": "system_telemetry", "action": "uptime_info", "target": None, "confidence": 0.95, "query": clean, "raw_text": raw_text}
+        if any(b in clean for b in ["battery status", "battery level", "how much battery", "check battery", "battery percentage", "is the laptop charging", "battery info"]):
+            return {"intent": "system_telemetry", "action": "battery_info", "target": "battery", "confidence": 0.95, "query": clean, "raw_text": raw_text}
+        if any(p in clean for p in ["power profile", "power plan", "power scheme", "laptop power modes", "acer power", "performance mode status", "laptop performance profile"]):
+            return {"intent": "power_control", "action": "report", "target": "power", "confidence": 0.95, "query": clean, "raw_text": raw_text}
 
         # -------------------------------------------------------------
         # 6. COMMAND HISTORY & REPETITION INTENTS
@@ -425,6 +677,160 @@ class IntentEngine:
 
         if clean in ["repeat", "what did you say", "say again", "repeat response"]:
             return {"intent": "repeat_response", "action": "repeat_speech", "target": None, "confidence": 0.95, "query": clean, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 6.4 DESKTOP INTELLIGENCE, SCREEN UNDERSTANDING, FILE CREATION & AI PROVIDERS
+        # -------------------------------------------------------------
+        # AI Management / Provider Settings & Caching Controls
+        if any(clean == s or clean.startswith(s + " ") for s in [
+            "how many api calls did caching save", "how many api calls did cache save",
+            "show my cache statistics", "show cache statistics", "cache statistics",
+            "show cache stats", "cache stats", "cache metrics", "show ai cache statistics"
+        ]):
+            return {
+                "intent": "ai_management.cache_stats",
+                "action": "cache_stats",
+                "target": "cache",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        if clean in ["clear cache", "clear ai cache", "clear all cache", "reset cache", "empty cache"]:
+            return {
+                "intent": "ai_management.clear_cache",
+                "action": "clear_cache",
+                "target": "cache",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        if any(clean.startswith(f) for f in ["forget this cached answer", "forget cached answer", "forget that cached answer", "forget last cached answer", "dispute cached answer"]):
+            target_str = clean
+            for pref in ["forget this cached answer for", "forget cached answer for", "forget this cached answer", "forget cached answer"]:
+                if clean.startswith(pref):
+                    target_str = clean[len(pref):].strip()
+                    break
+            return {
+                "intent": "ai_management.forget_cache",
+                "action": "forget_cache",
+                "target": target_str or "recent",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        if (
+            clean in ["list ai providers", "ai provider settings", "ai providers", "show ai providers", "configure ai providers", "ai settings"] or
+            re.search(r"^(?:list|show|view|configure|manage|open)?\s*ai\s+provider(?:s|\s+settings)?\b", clean, re.IGNORECASE)
+        ):
+            return {
+                "intent": "ai_management.list_providers",
+                "action": "list_providers",
+                "target": "ai_providers",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # Virtual Testing Room / Capability Lab
+        if (
+            clean in ["open virtual lab", "open virtual testing room", "virtual lab", "virtual testing room", "test lab", "run virtual tests", "capability lab"] or
+            re.search(r"^(?:open|launch|start|show)?\s*(?:the\s+)?virtual\s+(?:testing\s+room|lab)\b", clean, re.IGNORECASE)
+        ):
+            return {
+                "intent": "virtual_lab.open",
+                "action": "open_virtual_lab",
+                "target": "virtual_lab",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # Screen Analysis / Inspection
+        if (
+            clean in ["analyze my screen", "analyze screen", "what is on my screen", "what is on screen", "inspect screen", "inspect my screen"] or
+            re.search(r"^(?:analyze|inspect)\s+(?:my\s+)?screen\b", clean, re.IGNORECASE) or
+            re.search(r"^what\s+is\s+on\s+(?:my\s+)?screen\b", clean, re.IGNORECASE) or
+            re.search(r"^(?:analyze|inspect)\s+(?:my\s+)?screen\b", effective_raw, re.IGNORECASE) or
+            re.search(r"^what\s+is\s+on\s+(?:my\s+)?screen\b", effective_raw, re.IGNORECASE)
+        ):
+            return {
+                "intent": "screen_understanding.analyze",
+                "action": "analyze_screen",
+                "target": "screen",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # Screen Explanation & Visual Interpretation
+        screen_explain_patterns = [
+            r"^explain\s+(?:my\s+|the\s+)?screen\b",
+            r"^explain\s+this\s+page\b",
+            r"^what\s+are\s+the\s+important\s+points\b",
+            r"^explain\s+the\s+highlighted\s+section\b",
+            r"^what\s+does\s+this\s+error\s+mean\b",
+            r"^explain\s+this\s+code\b",
+            r"^summarize\s+this\s+(?:pdf|page|document)\b",
+            r"^explain\s+this\s+graph\b",
+            r"^what\s+is\s+this\s+button\s+used\s+for\b",
+            r"^compare\s+these\s+two\b",
+            r"^explain\s+point\s+\d+\b",
+            r"^explain\s+the\s+(?:first|second|third|fourth|fifth|last)\s+point\b",
+            r"i\s+still\s+don't\s+understand",
+            r"explain\s+it\s+with\s+an\s+example",
+            r"short\s+answer\s+first",
+            r"like\s+i'm\s+a\s+beginner",
+            r"beginner\s+friendly"
+        ]
+        if any(re.search(pat, clean, re.IGNORECASE) for pat in screen_explain_patterns) or \
+           any(re.search(pat, effective_raw, re.IGNORECASE) for pat in screen_explain_patterns):
+            return {
+                "intent": "screen_understanding.explain",
+                "action": "explain_screen",
+                "target": "screen",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # File Search & Discovery
+        file_search_patterns = [
+            r"^where\s+did\s+i\s+save\b",
+            r"^where\s+is\s+my\s+.*(?:program|file|code|repository|project|folder|readme)\b",
+            r"^find\s+(?:the\s+)?.*(?:created|saved|written)\b",
+            r"^find\s+(?:the\s+)?(?:readme|file|document|script|project)\b",
+            r"^search\s+(?:my\s+)?files\b"
+        ]
+        if any(re.search(pat, clean, re.IGNORECASE) for pat in file_search_patterns) or \
+           any(re.search(pat, effective_raw, re.IGNORECASE) for pat in file_search_patterns):
+            return {
+                "intent": "file_management.search",
+                "action": "search_files",
+                "target": "files",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # Real File Creation & Code Generation
+        file_create_patterns = [
+            r"^(?:create|write|generate|save)\s+(?:a|an|the|this)?\s*(?:(?:python|c\+\+|cpp|c|java|javascript|typescript|react|node\.?js|html|css|sql|rust|go|markdown)\s+)?(?:program|script|code|component|api\s+route|route|schema|explanation|readme|file)\b",
+            r"^(?:create|write|generate)\s+(?:a\s+)?readme\b",
+            r"^save\s+this\s+explanation\s+as\s+a\b"
+        ]
+        if any(re.search(pat, clean, re.IGNORECASE) for pat in file_create_patterns) or \
+           any(re.search(pat, effective_raw, re.IGNORECASE) for pat in file_create_patterns):
+            return {
+                "intent": "file_management.create_file",
+                "action": "create_file",
+                "target": "file",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
 
         # -------------------------------------------------------------
         # 6.5 CONTENT GENERATION & DRAFTING INTENTS
@@ -481,7 +887,7 @@ class IntentEngine:
         # -------------------------------------------------------------
         # 8. MEDIA CONTROL INTENTS
         # -------------------------------------------------------------
-        if clean in ["play music", "pause music", "pause", "resume music", "play", "stop music", "resume"]:
+        if clean in ["play music", "pause music", "pause", "resume music", "play", "stop music", "resume"] or clean.startswith("play music on ") or clean in ["play spotify", "play on spotify", "resume spotify", "pause spotify"]:
             return {"intent": "media_control", "action": "play_pause", "target": "media", "confidence": 0.96, "query": clean, "raw_text": raw_text}
 
         if clean in ["next song", "next track", "skip song", "skip track", "next"]:
@@ -514,12 +920,19 @@ class IntentEngine:
         if any(clean == s or clean.startswith(s + " ") for s in ["are you there", "are you online", "are you listening", "what are you doing", "you there"]):
             return {"intent": "status_check", "action": "respond_status_check", "target": clean, "confidence": 0.98, "query": clean, "raw_text": raw_text}
 
+        if any(clean == s or clean.startswith(s + " ") for s in [
+            "start session", "let's start", "lets start", "let's begin", "lets begin",
+            "begin session", "start working", "let's get started", "lets get started"
+        ]):
+            return {"intent": "session_start", "action": "start_session", "target": "session", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
         greetings = [
             "hello", "hi", "namaste", "good morning", "good evening", 
             "good afternoon", "good night", "yo", "hey buddy", "howdy", "hey",
             "what's up", "whats up", "what s up", "what is up"
         ]
-        if clean in greetings or any(clean.startswith(g) for g in ["hello", "hi ", "namaste", "good morning", "good evening", "good afternoon", "good night", "hey "]):
+        has_action_verb = any(v in clean for v in [" open ", " launch ", " start ", " close ", " search ", " find ", " lock ", " take screenshot", " play ", " mute "])
+        if not has_action_verb and (clean in greetings or any(clean.startswith(g) for g in ["hello", "hi ", "namaste", "good morning", "good evening", "good afternoon", "good night", "hey "])):
             return {"intent": "greeting", "action": "respond_greeting", "target": clean, "confidence": 0.95, "query": clean, "raw_text": raw_text}
 
         # -------------------------------------------------------------
@@ -578,13 +991,26 @@ class IntentEngine:
             if re.search(pat, clean):
                 return {"intent": "system_control", "action": "lock_pc", "target": None, "confidence": 0.98, "query": clean, "raw_text": raw_text}
 
-        # 11.2 SLEEP_COMPUTER
+        # 11.1.5 SLEEP_ASSISTANT (Assistant Sleep Mode)
+        assistant_sleep_patterns = [
+            r"^(?:please\s+)?(?:go\s+to\s+sleep|take\s+a\s+nap)$",
+            r"^(?:please\s+)?enter\s+sleep(?:\s+mode)?$",
+            r"^(?:please\s+)?sleep\s+mode$",
+            r"^(?:please\s+)?(?:sleep|nap)(?:\s+(?:now|santra|jarvis|assistant))?$",
+            r"^(?:santra|jarvis\s+)?(?:go\s+to\s+sleep|sleep|enter\s+sleep\s+mode)$",
+            r"^(?:can\s+you|could\s+you|please)?\s*(?:go\s+to\s+sleep|take\s+a\s+nap|enter\s+sleep\s+mode)$"
+        ]
+        for pat in assistant_sleep_patterns:
+            if re.search(pat, clean):
+                return {"intent": "system_control", "action": "sleep_assistant", "target": None, "confidence": 0.99, "query": clean, "raw_text": raw_text}
+
+        # 11.2 SLEEP_COMPUTER (OS Sleep / Suspend)
         sleep_patterns = [
-            r"^(?:put|send|make)\s+(?:my|the)?\s*(?:laptop|computer|pc|system)?\s*(?:to|into)?\s*sleep$",
-            r"^(?:can\s+you|could\s+you|please)?\s*put\s+(?:my|the)?\s*(?:laptop|computer|pc)\s+to\s+sleep$",
-            r"^(?:please\s+)?sleep(?:\s+(?:the|my)?\s*(?:computer|laptop|pc|system))?$",
-            r"^go\s+to\s+sleep$",
-            r"^sleep\s+computer$"
+            r"^(?:put|send|make)\s+(?:my|the)?\s*(?:laptop|computer|pc|system|machine)\s*(?:to|into)?\s*sleep$",
+            r"^(?:can\s+you|could\s+you|please)?\s*put\s+(?:my|the)?\s*(?:laptop|computer|pc|system)\s+to\s+sleep$",
+            r"^(?:please\s+)?sleep\s+(?:the|my)?\s*(?:computer|laptop|pc|system|machine)$",
+            r"^(?:put|send)\s+(?:the|my)?\s*(?:computer|laptop|pc)\s+into\s+standby$",
+            r"^sleep\s+(?:computer|pc|laptop|machine)$"
         ]
         for pat in sleep_patterns:
             if re.search(pat, clean):
@@ -638,6 +1064,27 @@ class IntentEngine:
         if any(kw in clean for kw in ["system metrics", "resource usage"]):
             return {"intent": "system_control", "action": "metrics", "target": None, "confidence": 0.92, "query": clean, "raw_text": raw_text}
 
+        # 11.7 STARTUP CONTROLS
+        if clean in ["enable startup", "start with windows", "launch on startup", "turn on startup", "enable auto start"]:
+            return {"intent": "system_control", "action": "enable_startup", "target": "startup", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if clean in ["disable startup", "do not start with windows", "don't start with windows", "remove from startup", "turn off startup", "disable auto start"]:
+            return {"intent": "system_control", "action": "disable_startup", "target": "startup", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if clean in ["check startup", "startup status", "is startup enabled", "check if startup is on"]:
+            return {"intent": "system_control", "action": "startup_status", "target": "startup", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # 11.8 ASSISTANT STANDBY & PRIVACY LISTENING CONTROLS
+        if clean in ["go to standby", "enter standby", "standby mode", "return to standby", "standby"]:
+            return {"intent": "system_control", "action": "enter_standby", "target": "standby", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if clean in ["stop listening", "disable listening", "turn off listening", "mute microphone", "mute mic", "stop voice"]:
+            return {"intent": "system_control", "action": "disable_listening", "target": "listening", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        if clean in ["resume listening", "enable listening", "turn on listening", "unmute microphone", "unmute mic", "start listening"]:
+            return {"intent": "system_control", "action": "enable_listening", "target": "listening", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+
         # -------------------------------------------------------------
         # 12. SCREENSHOT INTENTS
         # -------------------------------------------------------------
@@ -680,6 +1127,8 @@ class IntentEngine:
             m = re.search(pat, clean)
             if m:
                 q = m.group(1).strip()
+                if any(p in clean for p in ["in this application", "in this app", "in the current application", "in current app", "in chatgpt"]):
+                    continue
                 return {"intent": "web_search", "action": "search", "provider": "google", "target": q, "query": q, "confidence": 0.95, "raw_text": raw_text}
 
         for prov in ["github", "reddit", "stackoverflow", "stack overflow"]:
@@ -750,21 +1199,46 @@ class IntentEngine:
         # -------------------------------------------------------------
         # 17. CLOSE APP INTENTS
         # -------------------------------------------------------------
-        # Specific tab close: "close the Python tutorials tab", "close tab Python tutorials", "close tab"
-        close_tab_m = re.match(r"^(?:close|shut)\s+(?:the\s+)?(.+?)\s+tab$", clean, re.IGNORECASE)
-        if close_tab_m:
-            tab_target = close_tab_m.group(1).strip()
-            if tab_target.lower() in ["active", "current", "chrome", "this", ""]:
+        # Specific tab close: "close the current Chrome tab", "close the YouTube tab", "close the tab titled GitHub", "close the second Chrome tab", "close the tab showing my WellMeds dashboard"
+        if re.match(r"^(?:close|shut)(?:\s+down)?\s+(?:the\s+)?(?:active\s+|current\s+|this\s+)?(?:chrome\s+|browser\s+)?tab$", clean, re.IGNORECASE) or \
+           re.match(r"^(?:close|shut)(?:\s+down)?\s+(?:the\s+)?(?:active|current|this)\s+(?:chrome|browser)\s+tab$", clean, re.IGNORECASE) or \
+           clean in ["close tab", "shut tab", "close active tab", "close current tab", "close this tab", "close the tab", "close current chrome tab", "close active chrome tab"]:
+            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": "active", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Positional / Ordinal tab close: e.g. "close the second Chrome tab", "close tab 2"
+        ordinal_close_m = re.match(r"^(?:close|shut)(?:\s+down)?\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last|\d+(?:st|nd|rd|th)?)\s+(?:chrome\s+|browser\s+)?tab$", clean, re.IGNORECASE)
+        if ordinal_close_m:
+            pos = ordinal_close_m.group(1).lower().strip()
+            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": pos, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        pos_number_m = re.match(r"^(?:close|shut)(?:\s+down)?\s+(?:the\s+)?(?:chrome\s+|browser\s+)?tab\s+(?:number\s+|#\s*)?(\d+|first|second|third|fourth|fifth|last)$", clean, re.IGNORECASE)
+        if pos_number_m:
+            pos = pos_number_m.group(1).lower().strip()
+            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": pos, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Tab with descriptive prefix: e.g. "close the tab titled GitHub", "close the tab showing my WellMeds dashboard"
+        tab_desc_m = re.match(r"^(?:close|shut)(?:\s+down)?\s+(?:the\s+)?(?:chrome\s+|browser\s+)?tab\s+(?:titled|showing|named|called|with|about|for)\s+(.+)$", clean, re.IGNORECASE)
+        if tab_desc_m:
+            raw_target = tab_desc_m.group(1).strip()
+            raw_target = re.sub(r"\s+tab$", "", raw_target, flags=re.IGNORECASE).strip()
+            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": raw_target, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Named tab close with postfix "tab": e.g. "close the YouTube tab", "close the Python tutorials tab"
+        close_named_tab_m = re.match(r"^(?:close|shut)(?:\s+down)?\s+(?:the\s+)?(.+?)\s+(?:chrome\s+|browser\s+)?tab$", clean, re.IGNORECASE)
+        if close_named_tab_m:
+            tab_target = close_named_tab_m.group(1).strip()
+            if tab_target.lower() in ["active", "current", "chrome", "this", "current chrome", "active chrome", ""]:
                 return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": "active", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
             return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": tab_target, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
 
-        close_tab_prefix_m = re.match(r"^(?:close|shut)\s+tab\s+(.+)$", clean, re.IGNORECASE)
+        # "close tab <target>": e.g. "close tab YouTube", "close tab GitHub"
+        close_tab_prefix_m = re.match(r"^(?:close|shut)(?:\s+down)?\s+(?:chrome\s+|browser\s+)?tab\s+(.+)$", clean, re.IGNORECASE)
         if close_tab_prefix_m:
             tab_target = close_tab_prefix_m.group(1).strip()
+            tab_target = re.sub(r"^(?:titled|showing|named|called|with)\s+", "", tab_target, flags=re.IGNORECASE).strip()
+            if tab_target.lower() in ["active", "current", "chrome", "this", "current chrome", "active chrome", ""]:
+                return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": "active", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
             return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": tab_target, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
-
-        if re.match(r"^(?:close|shut)\s+(?:the\s+)?(?:active\s+|current\s+)?(?:chrome\s+)?tab$", clean, re.IGNORECASE):
-            return {"intent": "browser_tab_control", "action": "close_tab", "target": "chrome", "tab_target": "active", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
 
         # Specific tab switch: "switch to the Python tutorials tab", "switch to tab Python tutorials"
         switch_tab_m = re.match(r"^(?:switch|go)\s+to\s+(?:the\s+)?(.+?)\s+tab$", clean, re.IGNORECASE)
@@ -787,13 +1261,15 @@ class IntentEngine:
                 target_raw = m.group(1).strip() if m.groups() and m.group(1) else ""
                 target_raw = re.sub(r"\s+down$", "", target_raw).strip()
 
-                if target_raw in ["it", "this", "this window", "the window", ""]:
+                if "window" in target_raw:
+                    win_app_raw = re.sub(r"\b(?:this|the|my|current)?\s*window\b", "", target_raw, flags=re.IGNORECASE).strip()
+                    win_target = self.resolve_app_name(win_app_raw) if win_app_raw else None
+                    return {"intent": "window_control", "action": "close", "target": win_target, "confidence": 0.95, "query": clean, "raw_text": raw_text}
+
+                if target_raw in ["it", "this", ""]:
                     target_app = self.last_app_target
                 else:
                     target_app = self.resolve_app_name(target_raw)
-
-                if "window" in target_raw and not target_app:
-                    return {"intent": "window_control", "action": "close", "target": None, "confidence": 0.92, "query": clean, "raw_text": raw_text}
 
                 if target_app:
                     self.last_app_target = target_app
@@ -924,6 +1400,257 @@ class IntentEngine:
         if re.match(r"^read\s+(?:the\s+)?(?:current\s+)?(?:web)?page$", clean, re.IGNORECASE):
             return {"intent": "browser_action", "action": "read_page", "target": "current_page", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
 
+        # Workspace Launch and Listing Patterns
+        if clean in ["list workspaces", "show workspaces", "available workspaces", "what workspaces do i have", "my workspaces"]:
+            return {"intent": "workspace.launch", "action": "list", "target": "all", "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        ws_match = re.match(r"^(?:open|launch|start|run|setup|prepare)\s+(?:the\s+|my\s+)?(development|dev|gaming|study|research|excel)\s+(?:workspace|mode|setup|profile)$", clean, re.IGNORECASE)
+        if not ws_match:
+            ws_match = re.match(r"^(?:open|launch|start|run)\s+(?:the\s+|my\s+)?(development|dev|gaming|study|research|excel)\s+mode$", clean, re.IGNORECASE)
+        if not ws_match:
+            ws_match = re.match(r"^(development|dev|gaming|study|research|excel)\s+(?:workspace|mode|setup)$", clean, re.IGNORECASE)
+        if not ws_match and clean in ["start gaming mode", "gaming mode", "open gaming", "dev mode", "study mode"]:
+            ws_raw = clean.replace("start ", "").replace("open ", "").replace(" mode", "").strip()
+            return {"intent": "workspace.launch", "action": "launch", "target": ws_raw, "confidence": 0.98, "query": clean, "raw_text": raw_text}
+        if ws_match:
+            ws_target = ws_match.group(1).strip().lower()
+            if ws_target == "dev":
+                ws_target = "development"
+            return {"intent": "workspace.launch", "action": "launch", "target": ws_target, "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # Power Scheme switching patterns
+        power_scheme_m = re.match(r"^(?:set|change|switch)\s+(?:the\s+)?(?:power\s+)?(?:plan|scheme|mode)\s+to\s+(.+)$", clean, re.IGNORECASE)
+        if power_scheme_m:
+            target_scheme = power_scheme_m.group(1).strip()
+            return {"intent": "power_control", "action": "set_scheme", "target": target_scheme, "confidence": 0.98, "query": clean, "raw_text": raw_text}
+
+        # -------------------------------------------------------------
+        # 18.8 UNIVERSAL APPLICATION DISCOVERY & DESKTOP CONTROL INTENTS
+        # -------------------------------------------------------------
+        # Listing installed applications
+        if clean in [
+            "list my installed applications", "list installed applications", "list installed apps",
+            "what apps are installed", "what applications are installed", "show installed applications",
+            "show my installed applications", "my installed applications", "installed applications",
+            "list my apps", "show all installed applications"
+        ]:
+            return {"intent": "application.list_installed", "action": "list_all", "target": "all", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Available browsers
+        if clean in [
+            "find my available browsers", "what browsers are installed", "find available browsers",
+            "list my browsers", "what browsers do i have", "available browsers", "my browsers",
+            "list browsers", "show browsers", "find browsers", "which browsers do i have"
+        ]:
+            return {"intent": "application.list_installed", "action": "list_browsers", "category": "browser", "target": "browser", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Dynamic catalogue refresh
+        if clean in [
+            "scan applications", "refresh applications", "refresh installed apps",
+            "scan for applications", "scan for new applications", "refresh app registry",
+            "rescan applications", "scan for apps"
+        ]:
+            return {"intent": "application.refresh", "action": "refresh", "target": "applications", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Temporal application launch ("the application I installed yesterday")
+        if clean in [
+            "open the application i installed yesterday", "open the app i installed yesterday",
+            "launch the app i installed yesterday", "launch the application i installed yesterday",
+            "open the app installed yesterday", "open yesterday's app", "start the application i installed yesterday"
+        ]:
+            return {"intent": "open_app", "action": "open", "target": "installed_yesterday", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Application Properties dialog
+        prop_m = re.match(r"^(?:show|open|view|display)?\s*(?:the\s+)?properties\s+(?:of|for)\s+(.+)$", clean, re.IGNORECASE)
+        if not prop_m:
+            prop_m = re.match(r"^(?:show|open|view|display)?\s*(?:the\s+)?(.+?)(?:[\'s\s]+|\s+)properties(?:\s+dialog)?$", clean, re.IGNORECASE)
+        if prop_m:
+            raw_app = prop_m.group(1).strip()
+            raw_app = re.sub(r"^(?:the\s+|my\s+)", "", raw_app).strip()
+            resolved_app = self.resolve_app_name(raw_app)
+            return {"intent": "application.properties", "action": "open_properties", "target": resolved_app, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Application Installation folder reveal
+        dir_m = re.match(r"^(?:open|show|view|reveal|where\s+is)\s+(?:the\s+)?(?:installation\s+folder\s+of|installation\s+directory\s+of|install\s+folder\s+of|install\s+dir\s+of)\s+(.+)$", clean, re.IGNORECASE)
+        if not dir_m:
+            dir_m = re.match(r"^(?:open|show|view|reveal)?\s*(?:the\s+)?(.+?)(?:[\'s\s]+|\s+)(?:installation\s+folder|installation\s+directory|install\s+folder|install\s+dir)$", clean, re.IGNORECASE)
+        if not dir_m:
+            dir_m = re.match(r"^where\s+is\s+(.+?)\s+installed$", clean, re.IGNORECASE)
+        if dir_m:
+            raw_app = dir_m.group(1).strip()
+            raw_app = re.sub(r"^(?:the\s+|my\s+)", "", raw_app).strip()
+            resolved_app = self.resolve_app_name(raw_app)
+            return {"intent": "application.install_dir", "action": "open_install_dir", "target": resolved_app, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Application Settings
+        set_m = re.match(r"^(?:open|show|view)?\s*(?:the\s+)?(?:settings\s+for|settings\s+of)\s+(.+)$", clean, re.IGNORECASE)
+        if not set_m:
+            set_m = re.match(r"^(?:open|show|view)?\s*(?:the\s+)?(.+?)\'s\s+settings$", clean, re.IGNORECASE)
+        if not set_m:
+            set_m = re.match(r"^(?:open|show|view)\s+(.+?)\s+settings$", clean, re.IGNORECASE)
+        if set_m:
+            raw_app = set_m.group(1).strip()
+            raw_app = re.sub(r"^(?:the\s+|my\s+)", "", raw_app).strip()
+            if raw_app.lower() not in ["", "launch", "open", "start", "run", "windows", "system", "pc", "laptop"]:
+                resolved_app = self.resolve_app_name(raw_app)
+                return {"intent": "application.settings", "action": "open_settings", "target": resolved_app, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Application Version & Metadata
+        ver_m = re.match(r"^what\s+version\s+of\s+(.+?)\s+is\s+installed$", clean, re.IGNORECASE)
+        if not ver_m:
+            ver_m = re.match(r"^(?:show|view|what\s+is|tell\s+me)\s+(?:the\s+)?version\s+of\s+(.+)$", clean, re.IGNORECASE)
+        if not ver_m:
+            ver_m = re.match(r"^(?:show|view|what\s+is|tell\s+me)?\s*(?:the\s+)?(.+?)(?:[\'s\s]+|\s+)version(?:\s+installed)?$", clean, re.IGNORECASE)
+        if ver_m:
+            raw_app = ver_m.group(1).strip()
+            raw_app = re.sub(r"^(?:the\s+|my\s+)", "", raw_app).strip()
+            resolved_app = self.resolve_app_name(raw_app)
+            return {"intent": "application.metadata", "action": "get_metadata", "target": resolved_app, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Application Installed / Availability Inquiry
+        inst_m = re.match(r"^(?:is|check\s+if)\s+(.+?)\s+installed(?:\s+on\s+(?:this\s+|my\s+)?(?:computer|pc|laptop|system))?$", clean, re.IGNORECASE)
+        if not inst_m:
+            inst_m = re.match(r"^do\s+i\s+have\s+(.+?)(?:\s+installed)?$", clean, re.IGNORECASE)
+        if inst_m:
+            raw_app = inst_m.group(1).strip()
+            raw_app = re.sub(r"^(?:the\s+|my\s+)", "", raw_app).strip()
+            resolved_app = self.resolve_app_name(raw_app)
+            return {"intent": "application.status", "action": "is_installed", "target": resolved_app, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # -------------------------------------------------------------
+        # 18.9 UNIVERSAL DESKTOP INTERACTION & CONTEXT-AWARE TEXT ENTRY
+        # -------------------------------------------------------------
+        # 1. Search in current application
+        m_app_search = re.match(r"^(?:search\s+(?:for\s+)?(.+?)\s+(?:in|on)\s+(?:this\s+application|this\s+app|the\s+current\s+application|current\s+app))$", clean, re.IGNORECASE)
+        if not m_app_search:
+            m_app_search = re.match(r"^(?:search\s+(?:for\s+)?(.+?)\s+(?:in|on)\s+(chatgpt|youtube|whatsapp|editor))$", clean, re.IGNORECASE)
+        if not m_app_search:
+            m_app_search = re.match(r"^enter\s+(?:the\s+)?search\s+term(?:\s+(.+?))?\s+(?:in|on)\s+(.+)$", clean, re.IGNORECASE)
+        if m_app_search:
+            query_val = m_app_search.group(1).strip() if m_app_search.group(1) else "search term"
+            dest_val = m_app_search.group(2).strip() if len(m_app_search.groups()) > 1 and m_app_search.group(2) else "current_application"
+            return {
+                "intent": "desktop_interaction.search_app",
+                "action": "search_in_app",
+                "query": query_val,
+                "text": query_val,
+                "target": query_val,
+                "destination": dest_val,
+                "confidence": 0.98,
+                "raw_text": effective_raw
+            }
+
+        # 2. Write reply / response
+        m_reply = re.match(r"^(?:write|draft)\s+(?:a\s+)?(?:[\w\-]+\s+)?(?:reply|response)\s+(?:saying|that)\s+(.+)$", clean, re.IGNORECASE)
+        if not m_reply:
+            m_reply = re.match(r"^(?:write|draft)\s+(?:a\s+)?(?:[\w\-]+\s+)?(?:reply|response)(?:\s+to\s+(?:this\s+|the\s+)?(?:message|email|chat))?(?:\s+(?:in|on)\s+(.+))?$", clean, re.IGNORECASE)
+            if m_reply:
+                dest_val = m_reply.group(1).strip() if m_reply.group(1) else ""
+                return {
+                    "intent": "desktop_interaction.write_reply",
+                    "action": "write_reply",
+                    "text": clean,
+                    "target": clean,
+                    "destination": dest_val,
+                    "confidence": 0.98,
+                    "raw_text": effective_raw
+                }
+        if not m_reply:
+            m_reply = re.match(r"^reply(?:\s+to\s+(?:this\s+|the\s+)?(?:message|chat|email))?\s+(?:saying\s+)?(.+)$", clean, re.IGNORECASE)
+        if m_reply:
+            reply_text = m_reply.group(1).strip()
+            dest_val = m_reply.group(2).strip() if len(m_reply.groups()) > 1 and m_reply.group(2) else ""
+            return {
+                "intent": "desktop_interaction.write_reply",
+                "action": "write_reply",
+                "text": reply_text,
+                "target": reply_text,
+                "destination": dest_val,
+                "confidence": 0.98,
+                "raw_text": effective_raw
+            }
+
+        # 3. Direct simple type command for current search bar
+        if re.match(r"^(?:type\s+this\s+into\s+(?:the\s+)?current\s+search\s*bar|type\s+into\s+(?:the\s+)?search\s*bar)$", clean, re.IGNORECASE):
+            return {
+                "intent": "desktop_interaction.type_text",
+                "action": "enter_text",
+                "text": effective_raw,
+                "destination": "search bar",
+                "confidence": 0.98,
+                "raw_text": effective_raw
+            }
+
+        # 4. Text entry into specific or current field
+        m_type = re.match(r"^(?:type|paste|enter|put|write|fill\s+in)\s+(?:this\s+into|this\s+in|into|in)\s+(?:the\s+)?(?:current\s+)?(.+?)[:\s]+(.+)$", clean, re.IGNORECASE)
+        if not m_type:
+            m_type = re.match(r"^(?:type|paste|enter|put|write)\s+(.+?)\s+(?:into|in)\s+(?:the\s+)?(?:current\s+)?(.+)$", clean, re.IGNORECASE)
+        if not m_type:
+            m_type = re.match(r"^fill\s+in\s+(?:the\s+)?(.+?)\s+field(?:\s+with\s+(.+))?$", clean, re.IGNORECASE)
+        if m_type:
+            g1 = m_type.group(1).strip()
+            g2 = m_type.group(2).strip() if len(m_type.groups()) > 1 and m_type.group(2) else ""
+            if any(k in g1.lower() for k in ["search bar", "prompt box", "editor", "subject", "body", "field", "description"]):
+                dest_val = g1
+                text_val = g2 or g1
+            else:
+                text_val = g1
+                dest_val = g2
+            return {
+                "intent": "desktop_interaction.type_text",
+                "action": "enter_text",
+                "text": text_val,
+                "target": text_val,
+                "destination": dest_val,
+                "confidence": 0.98,
+                "raw_text": effective_raw
+            }
+
+        # 5. Replace selected text
+        m_replace = re.match(r"^replace\s+(?:the\s+)?(?:selected\s+text|selection)\s+with\s+(.+)$", clean, re.IGNORECASE)
+        if m_replace:
+            new_text = m_replace.group(1).strip()
+            return {
+                "intent": "desktop_interaction.replace_selection",
+                "action": "replace_selection",
+                "text": new_text,
+                "target": new_text,
+                "confidence": 0.98,
+                "raw_text": effective_raw
+            }
+
+        # 6. Continue writing / Draft editing
+        if clean in ["continue writing from where i left off", "continue writing", "continue from where i left off"]:
+            return {
+                "intent": "desktop_interaction.continue_writing",
+                "action": "continue_writing",
+                "target": "continue",
+                "confidence": 0.98,
+                "raw_text": effective_raw
+            }
+
+        m_edit_draft = re.match(r"^make\s+(?:the\s+)?(?:current\s+)?draft\s+(?:more\s+)?(.+)$", clean, re.IGNORECASE)
+        if m_edit_draft:
+            tone = m_edit_draft.group(1).strip()
+            return {
+                "intent": "desktop_interaction.edit_draft",
+                "action": "edit_draft",
+                "tone": tone,
+                "target": tone,
+                "confidence": 0.98,
+                "raw_text": effective_raw
+            }
+
+        # 7. Send message / Submit form
+        if clean in ["send the message", "send message", "send this message", "send it", "submit the form", "submit form"]:
+            return {
+                "intent": "desktop_interaction.send_message",
+                "action": "send_message",
+                "target": "send",
+                "confidence": 0.98,
+                "raw_text": effective_raw
+            }
+
         open_patterns = [
             r"^(?:open|launch|start|run|begin|bring\s+up|fire\s+up|load|get\s+up|use|i\s+want\s+to\s+use|help\s+me\s+open|start\s+up)\s+(?:the\s+|my\s+)?(.+)$",
             r"^bring\s+(?:the\s+|my\s+)?(.+?)\s+up$",
@@ -934,8 +1661,20 @@ class IntentEngine:
             m = re.search(pat, clean)
             if m:
                 target_raw = m.group(1).strip()
-                
-                # Check known folders
+
+                # Check ambiguous pronoun without antecedent
+                if target_raw.lower() in ["it", "that", "this", "that one", "the thing"]:
+                    if not getattr(self, "last_app_target", None):
+                        return {
+                            "intent": "clarification_needed",
+                            "action": "clarification_needed",
+                            "target": target_raw,
+                            "clarification_prompt": "Which application or website would you like me to open?",
+                            "confidence": 1.0,
+                            "raw_text": raw_text
+                        }
+                    else:
+                        target_raw = self.last_app_target
                 if target_raw in ["downloads", "download", "documents", "document", "desktop", "pictures", "videos", "music"]:
                     return {"intent": "file_access", "action": "open_folder", "target": target_raw, "confidence": 0.96, "query": clean, "raw_text": raw_text}
 

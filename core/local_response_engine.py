@@ -31,7 +31,7 @@ class LocalResponseEngine:
             "affirmation": ["Standing by.", "Understood."],
             "negation": ["Understood.", "Very well."],
             "how_are_you": ["I'm doing well, sir. Ready when you are.", "All systems operating normally. How can I help?"],
-            "status_check": ["All systems are online and operational.", "Jarvis is running smoothly and ready for commands."],
+            "status_check": ["All systems are online and operational.", "Santra is running smoothly and ready for commands."],
             "help": ["I can open applications, manage your computer, control volume, open folders and websites, take screenshots, and execute multiple commands."],
             "identity": ["I'm {assistant_name}, your personal desktop assistant.", "I'm {assistant_name}, built as a personal AI assistant project for {owner_name}."],
             "open_app": ["Opening {app}.", "Sure, opening {app}."],
@@ -84,12 +84,16 @@ class LocalResponseEngine:
         """Returns a fast, concise wake word acknowledgment."""
         return self.get_template("wake_response")
 
-    def get_identity_response(self) -> str:
+    def get_identity_response(self, sub_type: str = "general") -> str:
         """Returns identity information formatted with system configuration."""
-        tmpl = self.get_template("identity")
-        assistant_name = getattr(config, "assistant_name", "Jarvis")
-        owner_name = getattr(config, "owner_name", "Active Gamer")
-        return tmpl.format(assistant_name=assistant_name, owner_name=owner_name)
+        try:
+            from core.social_engine import social_engine
+            return social_engine.get_identity_response(sub_type)
+        except Exception:
+            tmpl = self.get_template("identity")
+            assistant_name = getattr(config, "assistant_name", "Santra")
+            owner_name = getattr(config, "owner_name", "Active Gamer")
+            return tmpl.format(assistant_name=assistant_name, owner_name=owner_name)
 
     def get_help_response(self) -> str:
         """Returns dynamically generated capability documentation from registered tools."""

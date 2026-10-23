@@ -5,7 +5,9 @@ import logging
 import tempfile
 import threading
 import numpy as np
-import sounddevice as sd
+from core.lazy_loader import lazy_import
+
+sd = lazy_import("sounddevice")
 
 logger = logging.getLogger("Jarvis.Listener")
 
@@ -24,6 +26,7 @@ class SpeechListener:
         self.enable_vad_onset = enable_vad_onset
         
         self._running = False
+        self._sleep_mode = False
         self._recording = False
         self._recording_start_time = None
         self._ambient_rms = 0.005
@@ -40,18 +43,53 @@ class SpeechListener:
         self.on_speech_start_cb = None
         self.on_speech_end_cb = None
         self.on_barge_in_cb = None  # Signature: callback(wav_path: str)
+        try:
+            from core.audio_device_resolver import resolve_audio_input_device
+            from config import config
+            pref = getattr(config, "audio_input_device", None) or getattr(config, "microphone_device", None)
+            self.active_input_device_index, self.active_input_device_name = resolve_audio_input_device(pref)
+        except Exception:
+            self.active_input_device_index = None
+            self.active_input_device_name = "Default Mic"
+
+        # Audio chunk consumers (e.g. OpenWakeWordDetector stream sharing)
+        self._audio_consumers = []
+        self._consumers_lock = threading.Lock()
         
         # Stabilization & Hysteresis
         self.speaking_active = False
+        self._barge_in_active = False
         self._speaking_cooldown_until = 0.0
         self._consecutive_speech_frames = 0
         self.MIN_CONSECUTIVE_FRAMES = 3
+
+    def add_audio_consumer(self, consumer):
+        """Registers a consumer callback receiving raw 16kHz 16-bit PCM chunks (indata: np.ndarray).
+        Allows sharing the microphone stream without opening competing hardware streams.
+        """
+        with self._consumers_lock:
+            if consumer not in self._audio_consumers:
+                self._audio_consumers.append(consumer)
+                logger.debug("Audio consumer registered.")
+
+    def remove_audio_consumer(self, consumer):
+        """Unregisters an audio chunk consumer."""
+        with self._consumers_lock:
+            if consumer in self._audio_consumers:
+                self._audio_consumers.remove(consumer)
+                logger.debug("Audio consumer unregistered.")
+
+    def is_recording(self) -> bool:
+        """Returns True if listener is actively recording speech (VAD or manual)."""
+        with self._lock:
+            return self._recording
 
     def set_speaking_active(self, is_speaking: bool):
         """Mutes speech listener background VAD while Jarvis is speaking."""
         with self._lock:
             self.speaking_active = is_speaking
             if is_speaking:
+                self._barge_in_active = False
                 # Suppress unconfirmed background VAD recording while Jarvis speaks, but keep manual wake recordings
                 if self._recording and not self._manual_recording:
                     logger.debug("Suppressing background VAD recording: Jarvis is speaking.")
@@ -61,9 +99,72 @@ class SpeechListener:
                     self._recording_start_time = None
                     self._consecutive_speech_frames = 0
             else:
-                # 350ms acoustic cooldown after TTS finishes to let room reverb decay
-                self._speaking_cooldown_until = time.time() + 0.35
+                if not self._barge_in_active and not self._recording:
+                    # 350ms acoustic cooldown after TTS finishes to let room reverb decay
+                    self._speaking_cooldown_until = time.time() + 0.35
+                else:
+                    self._speaking_cooldown_until = 0.0
                 self._consecutive_speech_frames = 0
+
+    def trigger_barge_in(self):
+        """Programmatically triggers barge-in (clears speaking state and cooldown, captures speech)."""
+        with self._lock:
+            self.speaking_active = False
+            self._barge_in_active = True
+            self._speaking_cooldown_until = 0.0
+            self._recording = True
+            self._recording_start_time = time.time()
+            self._manual_recording = False
+            self._audio_buffer = list(self._pre_roll_buffer)
+            self._silence_start = None
+            self._speech_detected = True
+            self._consecutive_speech_frames = 0
+            if self.on_barge_in_cb:
+                threading.Thread(target=self.on_barge_in_cb, name="BargeInCB", daemon=True).start()
+            if self.on_speech_start_cb:
+                threading.Thread(target=self.on_speech_start_cb, name="ListenerStartCB", daemon=True).start()
+
+    def _on_barge_in(self):
+        """Internal alias for trigger_barge_in."""
+        self.trigger_barge_in()
+
+    def set_sleep_mode(self, sleeping: bool):
+        """Puts listener into low-resource wake-word only sleep mode.
+        When sleeping:
+        - Background VAD speech onset is completely disabled.
+        - Speech frame accumulation into full Whisper transcription buffer is disabled.
+        - Audio is NOT dispatched to _save_and_dispatch or cloud services.
+        - The microphone stream stays alive feeding PCM frames strictly to registered
+          audio consumers (lightweight local wake word detector e.g. OpenWakeWord).
+        - Pre-roll ring buffer is kept bounded so when wake occurs,
+          subsequent command audio is ready without memory bloat.
+        """
+        with self._lock:
+            self._sleep_mode = bool(sleeping)
+            if self._sleep_mode:
+                self._recording = False
+                self._manual_recording = False
+                self._speech_detected = False
+                self._silence_start = None
+                self._recording_start_time = None
+                self._consecutive_speech_frames = 0
+                self._audio_buffer = []
+                self.speaking_active = False
+                logger.info("[SLEEP_MODE] Speech Listener entered low-resource sleep mode (VAD recording disabled, wake-word stream active).")
+            else:
+                self._recording = False
+                self._manual_recording = False
+                self._speech_detected = False
+                self._silence_start = None
+                self._recording_start_time = None
+                self._consecutive_speech_frames = 0
+                self._audio_buffer = []
+                logger.info("[SLEEP_MODE] Speech Listener exited sleep mode (VAD recording restored).")
+
+    def is_sleeping(self) -> bool:
+        """Returns True if listener is in sleep mode."""
+        with self._lock:
+            return self._sleep_mode
 
     def start(self, on_speech_start=None, on_speech_end=None):
         """Starts monitoring the microphone stream for voice activity."""
@@ -88,7 +189,14 @@ class SpeechListener:
             self._consecutive_speech_frames = 0
             
             try:
+                from config import config
+                from core.audio_device_resolver import resolve_audio_input_device
+                pref = getattr(config, "audio_input_device", None) or getattr(config, "microphone_device", None)
+                input_dev, dev_name = resolve_audio_input_device(pref)
+                self.active_input_device_index = input_dev
+                self.active_input_device_name = dev_name
                 self._stream = sd.InputStream(
+                    device=input_dev,
                     samplerate=self.sample_rate,
                     channels=1,
                     callback=self._audio_callback,
@@ -97,7 +205,7 @@ class SpeechListener:
                     dtype='float32'
                 )
                 self._stream.start()
-                logger.info("Speech Listener stream started successfully.")
+                logger.info(f"Speech Listener stream started successfully (device=[{input_dev}] '{dev_name}').")
             except Exception as e:
                 self._running = False
                 logger.error(f"Failed to start Speech Listener stream: {e}", exc_info=True)
@@ -185,7 +293,28 @@ class SpeechListener:
                 while total_samples - len(self._pre_roll_buffer[0]) >= max_samples:
                     total_samples -= len(self._pre_roll_buffer[0])
                     self._pre_roll_buffer.pop(0)
+
+        # Dispatch 16-bit PCM chunk to registered stream consumers (e.g. OpenWakeWord)
+        if self._audio_consumers:
+            try:
+                clipped = np.clip(indata[:, 0], -1.0, 1.0)
+                pcm_chunk = (clipped * 32767.0).astype(np.int16)
+                with self._consumers_lock:
+                    consumers = list(self._audio_consumers)
+                for consumer in consumers:
+                    try:
+                        consumer(pcm_chunk)
+                    except Exception as cex:
+                        logger.debug(f"Audio consumer callback exception: {cex}")
+            except Exception as ex:
+                logger.debug(f"Consumer dispatch error: {ex}")
  
+        # In sleep mode, bypass VAD onset, speech recording and transcription entirely.
+        # Registered audio consumers (wake word detector) have already received the chunk above.
+        with self._lock:
+            if self._sleep_mode:
+                return
+
         samples = indata[:, 0]
         rms = float(np.sqrt(np.mean(samples**2)))
         now = time.time()
@@ -195,9 +324,10 @@ class SpeechListener:
             if not self._recording:
                 self._ambient_rms = self._ambient_rms * 0.95 + rms * 0.05
                 
-            # Dual-threshold Hysteresis
-            onset_threshold = max(self.threshold, self._ambient_rms * 2.2)
-            hold_threshold = max(self.threshold * 0.65, self._ambient_rms * 1.25)
+            # Dual-threshold Hysteresis (adapts for quiet ANC headsets where ambient < 0.003)
+            effective_base = min(self.threshold, 0.008) if self._ambient_rms < 0.003 else self.threshold
+            onset_threshold = max(effective_base, self._ambient_rms * 2.2)
+            hold_threshold = max(effective_base * 0.65, self._ambient_rms * 1.25)
 
             # Check if currently suppressed by TTS or post-speech acoustic cooldown
             is_suppressed = self.speaking_active or (now < self._speaking_cooldown_until)
@@ -209,9 +339,9 @@ class SpeechListener:
                     self._consecutive_speech_frames += 1
                     if self._consecutive_speech_frames >= self.MIN_CONSECUTIVE_FRAMES:
                         logger.info(f"[VOICE_BARGE_IN] User speech detected during TTS (RMS: {rms:.4f} > {barge_in_threshold:.4f}). Interrupting speech.")
-                        if self.on_barge_in_cb:
-                            threading.Thread(target=self.on_barge_in_cb, name="BargeInCB", daemon=True).start()
                         self.speaking_active = False
+                        self._barge_in_active = True
+                        self._speaking_cooldown_until = 0.0
                         self._recording = True
                         self._recording_start_time = now
                         self._manual_recording = False
@@ -219,6 +349,8 @@ class SpeechListener:
                         self._silence_start = None
                         self._speech_detected = True
                         self._consecutive_speech_frames = 0
+                        if self.on_barge_in_cb:
+                            threading.Thread(target=self.on_barge_in_cb, name="BargeInCB", daemon=True).start()
                         if self.on_speech_start_cb:
                             threading.Thread(target=self.on_speech_start_cb, name="ListenerStartCB", daemon=True).start()
                 else:
@@ -248,7 +380,7 @@ class SpeechListener:
             
             # If actively recording
             elif self._recording:
-                if is_suppressed and not self._manual_recording:
+                if is_suppressed and not self._manual_recording and not self._barge_in_active:
                     # Echo suppression: cancel VAD recording triggered by speaker output
                     self._recording = False
                     self._audio_buffer = []
@@ -345,10 +477,15 @@ class SpeechListener:
             except Exception as e:
                 logger.error(f"Failed to save debug WAV file copy: {e}", exc_info=True)
             
+            with self._lock:
+                self._barge_in_active = False
+
             if self.on_speech_end_cb:
                 self.on_speech_end_cb(temp_path)
 
         except Exception as e:
+            with self._lock:
+                self._barge_in_active = False
             logger.error(f"Failed to process and save speech WAV: {e}", exc_info=True)
 
     @staticmethod

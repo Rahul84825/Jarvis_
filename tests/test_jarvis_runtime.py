@@ -76,5 +76,73 @@ class TestJarvisRuntime(unittest.TestCase):
         self.assertIsNone(self.runtime.pending_intent)
         self.assertEqual(self.runtime.current_status, "STANDBY")
 
+    def test_tts_manager_is_playing_and_synthesizing(self):
+        tts = self.runtime.tts_manager
+        tts._state = "IDLE"
+        tts._is_speaking = False
+        self.assertFalse(tts.is_playing())
+        self.assertFalse(tts.is_synthesizing())
+
+        tts._state = "TTS_SYNTHESIZING"
+        self.assertTrue(tts.is_synthesizing())
+        self.assertFalse(tts.is_playing())
+
+        tts._state = "TTS_PLAYING"
+        self.assertTrue(tts.is_playing())
+        self.assertFalse(tts.is_synthesizing())
+
+    def test_on_wakeword_barge_in_during_playback(self):
+        self.runtime.tts_manager.interrupt = MagicMock()
+        self.runtime.tts_manager.play_wake_chime = MagicMock()
+        self.runtime.listener.trigger_manual_recording = MagicMock()
+
+        self.runtime.tts_manager._state = "TTS_PLAYING"
+        self.runtime._tts_speaking_lock = True
+
+        self.runtime._on_wakeword("jarvis")
+
+        self.runtime.tts_manager.interrupt.assert_called_with(force=True)
+        self.assertFalse(self.runtime._tts_speaking_lock)
+        self.assertEqual(self.runtime.current_status, "LISTENING")
+
+    def test_on_wakeword_suppressed_during_synthesis(self):
+        self.runtime.tts_manager.interrupt = MagicMock()
+        self.runtime.tts_manager.play_wake_chime = MagicMock()
+
+        self.runtime.tts_manager._state = "TTS_SYNTHESIZING"
+        self.runtime._tts_speaking_lock = True
+        self.runtime.current_status = "STANDBY"
+
+        self.runtime._on_wakeword("jarvis")
+
+        self.runtime.tts_manager.interrupt.assert_not_called()
+        self.assertEqual(self.runtime.current_status, "STANDBY")
+
+    def test_on_wakeword_manual_click_always_interrupts(self):
+        self.runtime.tts_manager.interrupt = MagicMock()
+        self.runtime.tts_manager.play_wake_chime = MagicMock()
+        self.runtime.listener.trigger_manual_recording = MagicMock()
+
+        self.runtime.tts_manager._state = "TTS_SYNTHESIZING"
+        self.runtime._tts_speaking_lock = True
+
+        self.runtime._on_wakeword("manual_click")
+
+        self.runtime.tts_manager.interrupt.assert_called_with(force=True)
+        self.assertFalse(self.runtime._tts_speaking_lock)
+        self.assertEqual(self.runtime.current_status, "LISTENING")
+
+    def test_synthesizing_status_transition(self):
+        self.runtime._update_status("STANDBY")
+        self.runtime._on_speaker_synthesizing()
+        self.assertEqual(self.runtime.current_status, "SYNTHESIZING")
+
+        self.runtime._on_speaker_started()
+        self.assertEqual(self.runtime.current_status, "SPEAKING")
+
+        self.runtime._on_speaker_stopped()
+        self.assertEqual(self.runtime.current_status, "STANDBY")
+
 if __name__ == "__main__":
     unittest.main()
+

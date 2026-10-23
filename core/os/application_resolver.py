@@ -216,7 +216,29 @@ class ApplicationResolver:
                     display_name=display_name
                 )
 
-        # 3. CHECK KNOWN WEBSITE LINKS REGISTRY
+        # 3. CHECK DISCOVERED APPLICATIONS CATALOGUE DYNAMICALLY (Zero hardcoding)
+        try:
+            from core.apps.application_discovery import app_discovery
+            disc_app, _ = app_discovery.find_application(clean)
+            if disc_app and disc_app.is_available:
+                logger.info(f"[RESOLVER] Application '{disc_app.display_name}' dynamically resolved from Discovery Catalogue as NATIVE_APP")
+                is_running = False
+                if check_running:
+                    is_running = platform_manager.is_application_running(disc_app.app_id)
+                return ResolvedTarget(
+                    original_target=raw_target,
+                    target_type=TargetType.NATIVE_APP,
+                    canonical_name=disc_app.app_id,
+                    executable_path=disc_app.executable_path,
+                    is_installed=True,
+                    is_running=is_running,
+                    fallback_available=False,
+                    display_name=disc_app.display_name
+                )
+        except Exception as e:
+            logger.debug(f"[RESOLVER] Dynamic application discovery query error: {e}")
+
+        # 4. CHECK KNOWN WEBSITE LINKS REGISTRY
         if clean in self._link_definitions:
             link_url = self._link_definitions[clean]
             logger.info(f"[RESOLVER] Target '{clean}' resolved from links.json as WEBSITE -> {link_url}")
@@ -228,7 +250,7 @@ class ApplicationResolver:
                 display_name=clean.title()
             )
 
-        # 4. UNKNOWN / GENERIC TARGET
+        # 5. UNKNOWN / GENERIC TARGET
         return ResolvedTarget(
             original_target=raw_target,
             target_type=TargetType.UNKNOWN,

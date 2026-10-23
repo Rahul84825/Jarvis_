@@ -12,12 +12,13 @@ class CommandNormalizer:
     def __init__(self):
         logger.info("Initializing Command Normalizer.")
 
-        # Wake word variations for Jarvis (and legacy Goliya aliases)
+        # Wake word variations for Santra (and legacy Jarvis/Goliya aliases)
         self.wake_words = [
+            r"\b(hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*santra(?:'s)?\b",
             r"\b(hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*jarvis(?:'s)?\b",
             r"\b(hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*goliya(?:'s)?\b",
             r"\bhey\s+buddy\b",
-            r"\b(dervis|derbis|darwis|carves|charles|gerald|travis|garbage|device|assistant|jal|jals|goli)\b"
+            r"\b(sandra|santa|santana|santhra|samtra|santram|shantra|dervis|derbis|darwis|carves|charles|gerald|travis|garbage|device|assistant|jal|jals|goli)\b"
         ]
 
         # Polite phrases to remove (longer/more specific phrases first)
@@ -65,17 +66,30 @@ class CommandNormalizer:
             (r"\b(mute volume|mute audio|mute sound|silence audio)\b", "mute"),
             (r"\b(unmute volume|unmute audio|unmute sound)\b", "unmute"),
 
+            # Assistant Startup & Standby Controls
+            (r"\b(disable\s+startup|do\s+not\s+start\s+with\s+windows|don\s*'?\s*t\s+start\s+with\s+windows|remove\s+from\s+startup|turn\s+off\s+startup|disable\s+auto\s+start|auto\s+start\s+off)\b", "disable startup"),
+            (r"\b(enable\s+startup|start\s+with\s+windows|start\s+when\s+windows\s+starts|launch\s+on\s+startup|turn\s+on\s+startup|enable\s+auto\s+start|auto\s+start\s+on)\b", "enable startup"),
+
+            (r"\b(check startup|startup status|is startup enabled|check if startup is on)\b", "check startup"),
+            (r"\b(go to standby|enter standby|standby mode|return to standby)\b", "go to standby"),
+            (r"\b(stop listening|disable listening|turn off listening|mute microphone|mute mic)\b", "stop listening"),
+            (r"\b(resume listening|enable listening|turn on listening|unmute microphone|unmute mic)\b", "resume listening"),
+            (r"\b(let\s*'?\s*s\s+start|lets\s+start|start\s+session|let\s*'?\s*s\s+begin|lets\s+begin|begin\s+session|start\s+working|let\s*'?\s*s\s+get\s+started|lets\s+get\s+started)\b", "start session"),
+
+
             # Developer test commands
             (r"\b(run the tests|run tests|run project tests|run my tests)\b", "run tests"),
 
             # App launches
-            (r"\b(bring up|launch|start|open up|opening)\b", "open"),
+            (r"\b(bring up|launch|open up|opening)\b", "open"),
+            (r"\bstart\b(?!\s+(?:session|working)\b)", "open"),
             (r"\brun\b(?!\s+(?:the\s+)?tests\b)", "open"),
+
 
             # App name aliases & fuzzy command shortcuts
             (r"\b(visual studio code|vs code|vieskund|vees code|viscode|vies kund|code)\b", "vscode"),
-            (r"\bopen vs\b", "open vscode"),
-            (r"\b(?:the\s+)?(?:google\s+)?chrome(?:\s+browser)?|krone|crome|room|cru\b", "chrome"),
+            (r"\b(?:(?:the\s+)?(?:google\s+)?chrome(?:\s+browser)?|krone|crome|room)\b", "chrome"),
+            (r"\b(?:the\s+)?brave(?:\s+browser)?\b", "brave"),
             (r"\b(you\s+tube|u\s+tube|utube)\b", "youtube"),
             (r"\bspottify\b", "spotify"),
             (r"\bsteem\b", "steam"),
@@ -129,6 +143,61 @@ class CommandNormalizer:
         """Returns True if input text starts with the explicit search command prefix."""
         return cls.extract_explicit_search(text)[0]
 
+    @classmethod
+    def extract_youtube_search(cls, text: str):
+        """Extracts deterministic YouTube search query and target browser from natural language input.
+        Returns:
+            Tuple[bool, str, str]: (is_youtube_search, extracted_query, requested_browser)
+        """
+        if not text or not isinstance(text, str):
+            return False, "", "default"
+
+        raw = text.strip()
+        w_pat = r"^\s*(?:(?:hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*(?:jarvis|goliya|buddy)(?:'s)?\s*[,:]?\s*)*(?:\b(?:please|kindly)\b\s*)*"
+        cleaned = re.sub(w_pat, "", raw, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"[\.\?\!,]+$", "", cleaned).strip()
+
+        # Extract explicit browser if requested ('in chrome', 'using firefox')
+        browser = "default"
+        b_match = re.search(r"\b(?:in|using|with|on)\s+(chrome|chromium|edge|firefox|brave|opera)\s*$", cleaned, re.IGNORECASE)
+        if b_match:
+            browser = b_match.group(1).lower()
+            cleaned = cleaned[:b_match.start()].strip()
+
+        # Check YouTube search command patterns
+        # 1. Open YouTube and search for ...
+        m = re.match(r"^(?:open\s+(?:up\s+)?youtube\s+(?:and\s+|,)\s*(?:search\s*(?:for|about)?|find|look\s*up))\s*(.+)$", cleaned, re.IGNORECASE)
+        if not m:
+            # 2. Search (anything) on YouTube for/about ...
+            m = re.match(r"^(?:search\s*(?:for\s+)?(?:anything\s+)?(?:on\s+youtube|in\s+youtube|youtube\s+for|youtube\s+about|youtube)\s*(?:for|about|this\s+topic:?|topic:?)?)\s*(.+)$", cleaned, re.IGNORECASE)
+        if not m:
+            # 3. Look up / Find ... on YouTube
+            m = re.match(r"^(?:look\s*up|find(?:\s+me)?)\s+(.+?)\s+(?:on\s+youtube|in\s+youtube)$", cleaned, re.IGNORECASE)
+        if not m:
+            # 4. Find a video / videos / lectures / tutorials about ... (optional and open the results)
+            m = re.match(r"^(?:find(?:\s+me)?|look\s*up|search\s+for)\s+(?:a\s+video|videos?|lectures?|tutorials?)\s+(?:about|on|for)\s+(.+?)(?:\s+(?:on\s+youtube|and\s+open(?:\s+the)?\s+results))?$", cleaned, re.IGNORECASE)
+        if not m:
+            # 5. YouTube search for ...
+            m = re.match(r"^(?:youtube\s+search(?:\s+for|\s+about)?)\s*(.+)$", cleaned, re.IGNORECASE)
+
+        if not m:
+            return False, "", "default"
+
+        q = m.group(1).strip()
+        # Clean query artifacts
+        q = re.sub(r"\s+and\s+open(?:\s+the)?\s+results\s*$", "", q, flags=re.IGNORECASE).strip()
+        q = re.sub(r"^(?:this\s+topic:?|topic:?)\s*", "", q, flags=re.IGNORECASE).strip()
+        q = re.sub(r"^(?:for|about)\s+", "", q, flags=re.IGNORECASE).strip()
+        q = re.sub(r"^(?:(?:a\s+)?videos?\s+(?:about|on|for)|(?:tutorials?|lectures?)\s+(?:about|on|for))\s*", "", q, flags=re.IGNORECASE).strip()
+        q = re.sub(r"[\.\?\!,]+$", "", q).strip()
+
+        return True, q, browser
+
+    @classmethod
+    def is_youtube_search(cls, text: str) -> bool:
+        """Returns True if text is a YouTube search request."""
+        return cls.extract_youtube_search(text)[0]
+
     def split_chained_commands(self, text: str) -> list[str]:
         """Splits multi-command natural speech into a sequence of individual command strings using MultiCommandParser.
 
@@ -137,7 +206,16 @@ class CommandNormalizer:
             "Close Calculator and Volume Up" -> ["close calculator", "volume up"]
             "Open Chrome, then open GitHub and increase volume" -> ["open chrome", "open github", "increase volume"]
         """
-        if self.is_explicit_search(text):
+        if self.is_explicit_search(text) or self.is_youtube_search(text):
+            return [text]
+
+        # Do not split research and explain or AI reasoning compound requests
+        clean_check = text.lower().strip()
+        if re.search(r"\b(?:find|search)\b.*\band\b\s*(?:explain|summarize|tell)\b", clean_check, re.IGNORECASE):
+            return [text]
+        if re.search(r"\b(?:explain|solve|write|debug|compare)\b.*\band\b", clean_check, re.IGNORECASE):
+            return [text]
+        if re.search(r"\b(?:ask|tell|have)\s+(?:nvidia|nemotron)\b", clean_check, re.IGNORECASE):
             return [text]
 
         from core.multi_command_parser import multi_command_parser

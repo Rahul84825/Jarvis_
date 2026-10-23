@@ -59,11 +59,17 @@ env.bak/
 venv.bak/
 
 # Audio / temp / screenshots / logs
-logs/*.log
+logs/*.log*
+logs/*.db
+logs/*.jsonl
 memory/*.db
+tests/*.db
+scratch/
 *.wav
 *.mp3
 screenshots/*.png
+screenshots/temp/
+screenshots/
 
 # IDEs
 .vscode/

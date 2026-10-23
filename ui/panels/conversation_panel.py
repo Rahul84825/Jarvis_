@@ -24,7 +24,7 @@ class ConversationPanel(HUDFrame):
         self._chat_view.setProperty("class", "chatView")
         self._chat_view.setReadOnly(True)
         self._chat_view.append(
-            "<div style='margin-bottom:8px;'><b style='color:#00f0ff;'>[JARVIS ONLINE]</b> "
+            "<div style='margin-bottom:8px;'><b style='color:#00f0ff;'>[SANTRA ONLINE]</b> "
             "<span style='color:#94a3b8;'>Cyber-HUD Core initialized. Standing by for voice or text commands.</span></div>"
         )
         self.layout.addWidget(self._chat_view)
@@ -42,7 +42,7 @@ class ConversationPanel(HUDFrame):
             tool_tag = f" <span style='background-color:#7b68ee; color:#ffffff; padding:1px 5px; border-radius:3px; font-size:9px; font-weight:bold;'>{tool}</span>" if tool else ""
             html = (
                 f"<div style='margin-bottom:10px;'>"
-                f"<span style='color:#9d4edd; font-weight:bold; font-size:11px; letter-spacing:1px;'>JARVIS:</span>{tool_tag} "
+                f"<span style='color:#9d4edd; font-weight:bold; font-size:11px; letter-spacing:1px;'>SANTRA:</span>{tool_tag} "
                 f"<span style='color:#e2e8f0;'>{message}</span>"
                 f"</div>"
             )

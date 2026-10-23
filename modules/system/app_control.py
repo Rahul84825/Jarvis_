@@ -68,8 +68,22 @@ def launch_application(raw_name: str) -> Dict[str, Any]:
                 "candidates": []
             }
 
-    # 2. Search discovered applications catalogue
-    best_app, candidates = app_discovery.find_application(key)
+    # Check temporal installation query ("the application I installed yesterday")
+    if "yesterday" in key:
+        yesterday_app = app_discovery.find_application_by_date(day_offset=1)
+        if yesterday_app:
+            best_app = yesterday_app
+            candidates = []
+        else:
+            return {
+                "success": False,
+                "message": "I couldn't find any application installed yesterday, Sir.",
+                "outcome": "UNSUPPORTED_CAPABILITY",
+                "candidates": []
+            }
+    else:
+        # 2. Search discovered applications catalogue
+        best_app, candidates = app_discovery.find_application(key)
 
     if candidates:
         cand_names = [c.display_name for c in candidates[:4]]
@@ -100,7 +114,7 @@ def launch_application(raw_name: str) -> Dict[str, Any]:
         logger.info(f"[LAUNCH] Launching native application '{app_name}' from: {exec_path}")
         try:
             if sys.platform.startswith("win"):
-                if exec_path.lower().endswith(".lnk"):
+                if exec_path.lower().endswith(".lnk") or best_app.launch_mechanism == "uwp":
                     os.startfile(exec_path)
                 else:
                     cmd = [exec_path] + (best_app.arguments or [])
@@ -216,3 +230,37 @@ def minimize_app(app_key: str = None) -> bool:
 def maximize_app(app_key: str = None) -> bool:
     """Maximizes application window cross-platform."""
     return window_control.maximize_window(app_key)
+
+# Desktop Control & Properties Operations
+def open_app_properties(app_key: str) -> Dict[str, Any]:
+    """Opens file properties dialog for an application executable."""
+    return app_discovery.open_properties_dialog(app_key)
+
+def open_app_install_dir(app_key: str) -> Dict[str, Any]:
+    """Opens installation folder in file manager."""
+    return app_discovery.open_install_folder(app_key)
+
+def open_app_settings(app_key: str) -> Dict[str, Any]:
+    """Opens application internal or system settings."""
+    return app_discovery.open_app_settings(app_key)
+
+def get_app_metadata(app_key: str) -> Dict[str, Any]:
+    """Retrieves version, publisher, path, and details for an application."""
+    return app_discovery.get_app_metadata(app_key)
+
+def is_app_installed(app_key: str) -> Dict[str, Any]:
+    """Checks if an application is installed and available."""
+    return app_discovery.is_app_installed(app_key)
+
+def list_installed_apps(category: Optional[str] = None) -> Dict[str, Any]:
+    """Lists installed applications or filters by category."""
+    return app_discovery.list_installed_apps(category=category)
+
+def refresh_apps() -> Dict[str, Any]:
+    """Refreshes discovered applications catalogue at runtime."""
+    count = app_discovery.refresh()
+    return {
+        "success": True,
+        "count": count,
+        "message": f"Application registry refreshed. Discovered {count} applications."
+    }

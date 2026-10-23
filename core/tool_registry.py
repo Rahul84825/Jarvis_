@@ -97,6 +97,108 @@ class ToolRegistry:
             risk_level="LOW",
             verification_strategy="window_focus"
         ))
+        self.register(ToolDefinition(
+            name="application.properties",
+            category="applications",
+            description="Open operating system file Properties dialog for an application executable.",
+            args={"target": str},
+            risk_level="LOW",
+            verification_strategy="process_check"
+        ))
+        self.register(ToolDefinition(
+            name="application.install_dir",
+            category="applications",
+            description="Open installation folder in File Explorer / OS desktop file manager with executable selected.",
+            args={"target": str},
+            risk_level="LOW",
+            verification_strategy="process_check"
+        ))
+        self.register(ToolDefinition(
+            name="application.settings",
+            category="applications",
+            description="Open internal application settings (e.g. chrome://settings) or system app details.",
+            args={"target": str},
+            risk_level="LOW",
+            verification_strategy="process_check"
+        ))
+        self.register(ToolDefinition(
+            name="application.metadata",
+            category="applications",
+            description="Retrieve version, publisher, install path, and architecture metadata for an installed application.",
+            args={"target": str},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="application.status",
+            category="applications",
+            description="Check if an application is installed and available on the local operating system.",
+            args={"target": str},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="application.list_installed",
+            category="applications",
+            description="List installed desktop applications or available applications in a category like browsers.",
+            args={"category": Optional[str], "query": Optional[str]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="application.refresh",
+            category="applications",
+            description="Refresh the discovered applications catalogue at runtime without restarting JARVIS.",
+            args={},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+
+        # 1.5 Desktop Interaction & Universal Text Entry
+        self.register(ToolDefinition(
+            name="desktop.get_context",
+            category="interaction",
+            description="Inspect the active foreground application, window title, focused element, and available input fields.",
+            args={"explicit_destination": Optional[str], "allow_ocr": Optional[bool]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="desktop.enter_text",
+            category="interaction",
+            description="Enter text into the resolved or specified target control with safety window stability check.",
+            args={"text": str, "target": Optional[str], "mode": Optional[str]},
+            risk_level="MEDIUM",
+            has_side_effects=True,
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="desktop.search_in_app",
+            category="interaction",
+            description="Search for a query within the active application's search bar.",
+            args={"query": str, "explicit_destination": Optional[str]},
+            risk_level="LOW",
+            has_side_effects=True,
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="desktop.replace_selection",
+            category="interaction",
+            description="Replace the currently selected text with new text in the active control.",
+            args={"text": str},
+            risk_level="MEDIUM",
+            has_side_effects=True,
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="desktop.send_message",
+            category="interaction",
+            description="Send a drafted message or submit a form, requiring explicit confirmation before execution.",
+            args={"confirm": Optional[bool]},
+            risk_level="HIGH",
+            has_side_effects=True,
+            verification_strategy="status_code"
+        ))
 
         # 2. Browser & Chrome Control
         self.register(ToolDefinition(
@@ -122,6 +224,14 @@ class ToolRegistry:
             args={"action": str, "tab_id": Optional[str]},
             risk_level="LOW",
             verification_strategy="browser_state"
+        ))
+        self.register(ToolDefinition(
+            name="browser_action",
+            category="browser",
+            description="Universal intent-driven browser automation for navigating, searching specific websites, interacting with prompts, and tab control.",
+            args={"action_type": str, "site_name": Optional[str], "url": Optional[str], "query": Optional[str]},
+            risk_level="LOW",
+            verification_strategy="url_open"
         ))
 
         # 3. Search (Separated Intents)
@@ -156,6 +266,31 @@ class ToolRegistry:
             args={"query": str, "extension": Optional[str]},
             risk_level="LOW",
             verification_strategy="filesystem_check"
+        ))
+        self.register(ToolDefinition(
+            name="open_search_result",
+            category="browser",
+            description="Open a specific numbered search result (e.g. first result, second result) from the active search.",
+            args={"index": int, "provider": Optional[str], "query": Optional[str]},
+            risk_level="LOW",
+            verification_strategy="url_open"
+        ))
+        self.register(ToolDefinition(
+            name="verify_page_loaded",
+            category="browser",
+            description="Verify if a web page has finished loading or is ready via browser state.",
+            args={"url": Optional[str], "title": Optional[str]},
+            risk_level="LOW",
+            verification_strategy="browser_state"
+        ))
+        self.register(ToolDefinition(
+            name="write_to_notepad",
+            category="content",
+            description="Open Notepad and write specified text or explanation into the document.",
+            args={"text": str, "title": Optional[str]},
+            risk_level="LOW",
+            has_side_effects=True,
+            verification_strategy="process_check"
         ))
 
         # 4. Media & YouTube playback
@@ -272,6 +407,22 @@ class ToolRegistry:
             args={},
             risk_level="LOW"
         ))
+        self.register(ToolDefinition(
+            name="startup_control",
+            category="system",
+            description="Manage Windows startup integration: enable, disable, or query startup state.",
+            args={"action": str},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="standby_control",
+            category="system",
+            description="Control assistant listening and standby states (enter standby, mute/disable mic, unmute/enable mic).",
+            args={"action": str},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
 
         # 7. Developer Workflows
         self.register(ToolDefinition(
@@ -343,12 +494,159 @@ class ToolRegistry:
             args={"action": str, "topic": str},
             risk_level="LOW"
         ))
+        # 10. Social Intelligence, Humor & Personality
         self.register(ToolDefinition(
-            name="privacy_control",
-            category="privacy",
-            description="Inspect or update the 3-tier privacy mode (STRICT, GUARDED, RELAXED).",
-            args={"action": str, "mode": Optional[str]},
+            name="tell_joke",
+            category="social",
+            description="Share clean programming, tech, futuristic, and lighthearted jokes.",
+            args={"category": Optional[str]},
             risk_level="LOW"
+        ))
+        self.register(ToolDefinition(
+            name="fun_fact",
+            category="social",
+            description="Share fascinating computing, science, and technology facts.",
+            args={"category": Optional[str]},
+            risk_level="LOW"
+        ))
+        self.register(ToolDefinition(
+            name="playful_roast",
+            category="social",
+            description="Deliver harmless, witty, and playful roasts upon request.",
+            args={"target": Optional[str]},
+            risk_level="LOW"
+        ))
+        self.register(ToolDefinition(
+            name="set_personality",
+            category="personality",
+            description="Configure conversational tone (normal, professional, funny, dramatic), response length, and humor.",
+            args={"tone": Optional[str], "length": Optional[str], "humor": Optional[bool]},
+            risk_level="LOW"
+        ))
+        self.register(ToolDefinition(
+            name="dynamic_help",
+            category="help",
+            description="Explain system capabilities, registered tools, voice commands, and offline support.",
+            args={"scope": Optional[str]},
+            risk_level="LOW"
+        ))
+
+        # 11. Workspaces & Power Management
+        self.register(ToolDefinition(
+            name="workspace.launch",
+            category="workspaces",
+            description="Launch declarative workspace environments (Development, Gaming, Study, Research, Excel).",
+            args={"target": str, "confirmed_optional_ids": Optional[list], "declined_optional_ids": Optional[list]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="power.scheme",
+            category="system",
+            description="Query or switch Windows power scheme and report Acer laptop OEM power state.",
+            args={"target": str, "action": Optional[str]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="battery.status",
+            category="system",
+            description="Query live Windows battery percentage, charging state, and estimated runtime.",
+            args={},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+
+        # 12. Desktop Context & Visual Intelligence
+        self.register(ToolDefinition(
+            name="screen.analyze",
+            category="vision",
+            description="Capture and visually analyze the active window, region, or entire screen.",
+            args={"prompt": Optional[str], "target": Optional[str]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="screen.explain",
+            category="vision",
+            description="Generate tailored explanations (beginner, technical, step-by-step, code) for visible screen content.",
+            args={"query": str, "style": Optional[str]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+
+        # 13. File Management & Project Intelligence
+        self.register(ToolDefinition(
+            name="files.create",
+            category="files",
+            description="Safely create and verify real files on disk with syntax validation.",
+            args={"filename": str, "destination": str, "content": str, "language": Optional[str], "allow_overwrite": Optional[bool]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="files.search",
+            category="files",
+            description="Search indexed desktop files and projects with stale path pruning.",
+            args={"query": str, "extension": Optional[str], "project_alias": Optional[str]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="files.open",
+            category="files",
+            description="Open a file or folder in File Explorer or its default application.",
+            args={"file_path": str},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="project.inspect",
+            category="files",
+            description="Analyze project architecture, frameworks, dependencies, and entry points.",
+            args={"project_path": str},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="ai.get_providers",
+            category="ai",
+            description="List configured AI providers, availability, models, and priority ranking.",
+            args={},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="ai.update_provider",
+            category="ai",
+            description="Update API key, active model, or priority for an AI provider.",
+            args={"provider_id": str, "api_key": Optional[str], "model": Optional[str], "enabled": Optional[bool]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="ai.cache_stats",
+            category="ai",
+            description="Report metrics and API calls saved by the multi-layer AI cache.",
+            args={},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="ai.clear_cache",
+            category="ai",
+            description="Clear cached AI responses with optional layer filtering.",
+            args={"layer": Optional[str]},
+            risk_level="MEDIUM",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="ai.forget_cache",
+            category="ai",
+            description="Invalidate or mark a specific cached query/answer as disputed.",
+            args={"query": str},
+            risk_level="LOW",
+            verification_strategy="status_code"
         ))
 
 # Global singleton

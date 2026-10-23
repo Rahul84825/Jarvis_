@@ -197,6 +197,19 @@ class BrowserManager:
         logger.info(f"[BROWSER] OS: {platform_manager.os_name} | Requested Browser: {browser_name} | Selected Browser: {resolved_browser} | Provider: {prov_key.title()} | Query: '{query}' | URL: {target_url} | Result: PENDING")
 
         try:
+            # If CDP is available and an existing tab for this provider (e.g. YouTube) is open, activate it
+            if self.cdp.is_available() and prov_key in ("youtube", "google"):
+                try:
+                    tabs = self.cdp.list_tabs()
+                    match_domain = "youtube.com" if prov_key == "youtube" else "google.com"
+                    existing_tab = next((t for t in tabs if match_domain in (t.get("url") or "").lower()), None)
+                    if existing_tab and existing_tab.get("id"):
+                        logger.info(f"[BROWSER] Reusing existing {prov_key} tab (ID: {existing_tab['id']}) for search navigation.")
+                        self.cdp.activate_tab(existing_tab["id"])
+                        self.focus_browser(resolved_browser if resolved_browser != "default" else "chrome")
+                except Exception as cdpe:
+                    logger.debug(f"[BROWSER] CDP tab check ignored: {cdpe}")
+
             success = platform_manager.open_browser(resolved_browser, url=target_url)
             prov_display = "YouTube" if prov_key == "youtube" else ("Stack Overflow" if prov_key == "stackoverflow" else ("GitHub" if prov_key == "github" else prov_key.title()))
 
@@ -208,6 +221,7 @@ class BrowserManager:
                     "provider": prov_key,
                     "query": query,
                     "url": target_url,
+                    "browser": resolved_browser,
                     "message": f"Searching {prov_display}. I opened {prov_display} search results for '{query}'."
                 }
 
@@ -382,47 +396,136 @@ class BrowserManager:
         success = self._send_shortcut(ctrl=True, vk=0x54)
         return {"success": success, "message": "Opened new tab in browser." if success else "Failed to open new tab."}
 
+    ORDINAL_MAP = {
+        "first": 0, "1st": 0,
+        "second": 1, "2nd": 1,
+        "third": 2, "3rd": 2,
+        "fourth": 3, "4th": 3,
+        "fifth": 4, "5th": 4,
+        "sixth": 5, "6th": 5,
+        "last": -1
+    }
+
+    def _resolve_ordinal(self, query: str) -> Optional[int]:
+        clean = (query or "").lower().strip()
+        if clean in self.ORDINAL_MAP:
+            return self.ORDINAL_MAP[clean]
+        # Check digit string
+        m = re.match(r"^(\d+)(?:st|nd|rd|th)?$", clean)
+        if m:
+            num = int(m.group(1))
+            return (num - 1) if num > 0 else 0
+        return None
+
     def find_matching_tabs(self, target_query: str) -> List[Dict[str, Any]]:
-        """Finds open CDP tabs matching title or URL query (case-insensitive substring)."""
+        """Finds open CDP tabs matching title or URL query with exact and fuzzy matching."""
         if not self.cdp.is_available() or not target_query:
             return []
         clean_q = target_query.lower().strip()
-        clean_q = re.sub(r"\s+tab$", "", clean_q).strip()
+        # Clean prefix and suffix artifacts
+        clean_q = re.sub(r"^(?:titled|showing|named|called|with|for|my|the|a)\s+", "", clean_q, flags=re.IGNORECASE).strip()
+        clean_q = re.sub(r"\s+(?:chrome\s+)?tab$", "", clean_q, flags=re.IGNORECASE).strip()
+        clean_q = re.sub(r"^(?:my\s+|the\s+)", "", clean_q, flags=re.IGNORECASE).strip()
+
         tabs = self.cdp.list_tabs()
+        if not tabs:
+            return []
+
+        # 1. Exact match check (title equals or URL exact domain/path)
+        exact_matches = []
+        for t in tabs:
+            title = (t.get("title") or "").lower().strip()
+            url = (t.get("url") or "").lower().strip()
+            if clean_q == title or clean_q in url.split("/"):
+                exact_matches.append(t)
+        if len(exact_matches) == 1:
+            return exact_matches
+
+        # 2. Substring matching
         matches = []
         for t in tabs:
             title = (t.get("title") or "").lower()
             url = (t.get("url") or "").lower()
             if clean_q in title or clean_q in url:
                 matches.append(t)
+
+        # 3. Token-based fallback if no substring match found
+        if not matches:
+            tokens = [tok for tok in re.split(r"\s+", clean_q) if len(tok) >= 3]
+            if tokens:
+                for t in tabs:
+                    title = (t.get("title") or "").lower()
+                    url = (t.get("url") or "").lower()
+                    if all(tok in title or tok in url for tok in tokens):
+                        matches.append(t)
+
         return matches
 
     def close_tab(self, target: str = None, tab_id: str = None) -> Dict[str, Any]:
-        """Closes the active or specified browser tab."""
+        """Closes the active, ordinal, or specifically named browser tab reliably via CDP or window shortcut."""
         # 1. Direct tab ID via CDP
         if tab_id and self.cdp.is_available():
             closed = self.cdp.close_tab(tab_id)
             if closed:
-                return {"success": True, "message": f"Closed browser tab {tab_id}."}
+                verified = self.cdp.verify_tab_closed(tab_id)
+                return {"success": True, "verified": verified, "tab_id": tab_id, "message": f"Closed browser tab {tab_id}."}
             return {"success": False, "message": f"Failed to close browser tab {tab_id}."}
 
-        # 2. Targeted tab resolution by name/query
-        if target and target.lower() not in ["active", "current", "chrome", "this", ""]:
-            clean_target = re.sub(r"\s+tab$", "", target, flags=re.IGNORECASE).strip()
+        # 2. Check for ordinal/positional tab request (e.g. "second", "2nd", "tab 2")
+        ordinal_idx = self._resolve_ordinal(target)
+        if ordinal_idx is not None:
+            if self.cdp.is_available():
+                tabs = self.cdp.list_tabs()
+                if not tabs:
+                    return {"success": False, "message": "No open tabs found in Chrome."}
+                total = len(tabs)
+                if (0 <= ordinal_idx < total) or (ordinal_idx == -1):
+                    target_tab = tabs[ordinal_idx]
+                    tid = target_tab.get("id")
+                    title = target_tab.get("title", "Untitled")
+                    closed = self.cdp.close_tab(tid)
+                    if closed:
+                        verified = self.cdp.verify_tab_closed(tid)
+                        pos_label = target.strip() if target else f"#{ordinal_idx + 1}"
+                        return {"success": True, "verified": verified, "tab_id": tid, "message": f"Closed the {pos_label} Chrome tab ('{title}')."}
+                    return {"success": False, "message": f"Failed to close the {target} Chrome tab."}
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Chrome only has {total} open tab(s). Could not find the {target} tab."
+                    }
+            else:
+                return {
+                    "success": False,
+                    "cdp_required": True,
+                    "message": "Closing tabs by position requires Chrome remote debugging. Launch Chrome with '--remote-debugging-port=9222' to enable positional tab control."
+                }
+
+        # 3. Targeted tab resolution by name / query
+        is_active_target = not target or target.lower().strip() in ["active", "current", "chrome", "this", "current chrome", "active chrome", ""]
+        if not is_active_target:
+            clean_target = re.sub(r"^(?:titled|showing|named|called|with|for|my|the)\s+", "", target, flags=re.IGNORECASE).strip()
+            clean_target = re.sub(r"\s+(?:chrome\s+)?tab$", "", clean_target, flags=re.IGNORECASE).strip()
+            clean_target = re.sub(r"^(?:my\s+|the\s+)", "", clean_target, flags=re.IGNORECASE).strip()
+
             if self.cdp.is_available():
                 matches = self.find_matching_tabs(clean_target)
                 if len(matches) == 1:
-                    tid = matches[0].get("id")
-                    title = matches[0].get("title", clean_target)
+                    target_tab = matches[0]
+                    tid = target_tab.get("id")
+                    title = target_tab.get("title", clean_target)
                     closed = self.cdp.close_tab(tid)
                     if closed:
-                        return {"success": True, "message": f"Closed the '{title}' tab."}
+                        verified = self.cdp.verify_tab_closed(tid)
+                        return {"success": True, "verified": verified, "tab_id": tid, "message": f"Closed the '{title}' tab."}
                     return {"success": False, "message": f"Failed to close the '{title}' tab."}
                 elif len(matches) > 1:
                     titles = [f"'{t.get('title', 'Untitled')}'" for t in matches[:3]]
                     return {
                         "success": False,
                         "ambiguous": True,
+                        "disambiguation_required": True,
+                        "candidates": [t.get("title") for t in matches],
                         "message": f"Multiple tabs matched '{clean_target}': {', '.join(titles)}. Please specify which tab to close."
                     }
                 else:
@@ -431,14 +534,27 @@ class BrowserManager:
                 return {
                     "success": False,
                     "cdp_required": True,
-                    "message": f"Controlling background tabs by name requires Chrome with remote debugging. Launch Chrome with '--remote-debugging-port=9222' to enable targeted tab control."
+                    "message": "Controlling background tabs by name requires Chrome with remote debugging. Launch Chrome with '--remote-debugging-port=9222' to enable targeted tab control."
                 }
 
-        # 3. Active / current tab via keyboard shortcut
+        # 4. Active / current tab closing
+        if self.cdp.is_available():
+            active_tab = self.cdp.get_active_tab()
+            if active_tab and active_tab.get("id"):
+                tid = active_tab.get("id")
+                title = active_tab.get("title", "Untitled")
+                closed = self.cdp.close_tab(tid)
+                if closed:
+                    verified = self.cdp.verify_tab_closed(tid)
+                    return {"success": True, "verified": verified, "tab_id": tid, "message": f"Closed active Chrome tab '{title}'."}
+                return {"success": False, "message": f"Failed to close active Chrome tab '{title}'."}
+            else:
+                return {"success": False, "message": "No open tabs found in Chrome."}
+
+        # Fallback to keyboard shortcut Ctrl+W (0x57) in focused window if CDP is offline
         if not self.focus_browser():
             return {"success": False, "verified": False, "message": "No active browser window found or window could not be focused."}
 
-        # Ctrl+W (0x57)
         success = self._send_shortcut(ctrl=True, vk=0x57)
         return {"success": success, "message": "Closed active browser tab." if success else "Failed to close tab."}
 

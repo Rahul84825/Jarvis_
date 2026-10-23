@@ -1,0 +1,114 @@
+{
+  "development": {
+    "name": "Development",
+    "aliases": ["development", "dev workspace", "dev setup", "coding setup", "coding mode"],
+    "description": "Prepares development environment with code editor, documentation, and terminal.",
+    "steps": [
+      {
+        "id": "editor",
+        "name": "Launch VS Code",
+        "tool": "open_app",
+        "args": {"target": "vscode"},
+        "required": true
+      },
+      {
+        "id": "docs",
+        "name": "Open GitHub",
+        "tool": "open_website",
+        "args": {"url": "https://github.com"},
+        "required": false
+      }
+    ],
+    "optional_actions": []
+  },
+  "gaming": {
+    "name": "Gaming",
+    "aliases": ["gaming", "gaming mode", "gaming workspace", "start gaming mode", "game setup"],
+    "description": "Prepares gaming environment, sets gaming power scheme, launches Valorant, and optionally opens Discord.",
+    "steps": [
+      {
+        "id": "power_plan",
+        "name": "Set Gaming Power Scheme",
+        "tool": "power.scheme",
+        "args": {"target": "High Performance", "action": "set"},
+        "required": false
+      },
+      {
+        "id": "valorant",
+        "name": "Launch Valorant",
+        "tool": "open_app",
+        "args": {"target": "valorant"},
+        "required": true
+      }
+    ],
+    "optional_actions": [
+      {
+        "id": "discord",
+        "name": "Open Discord",
+        "prompt": "I'll prepare your gaming setup. Would you like Discord open as well?",
+        "tool": "open_app",
+        "args": {"target": "discord"},
+        "default": null
+      }
+    ]
+  },
+  "study": {
+    "name": "Study",
+    "aliases": ["study", "study workspace", "learning mode", "study setup"],
+    "description": "Prepares learning environment with notes and study reference portals.",
+    "steps": [
+      {
+        "id": "notes",
+        "name": "Open Notepad",
+        "tool": "open_app",
+        "args": {"target": "notepad"},
+        "required": true
+      },
+      {
+        "id": "portal",
+        "name": "Open LeetCode",
+        "tool": "open_website",
+        "args": {"url": "https://leetcode.com"},
+        "required": false
+      }
+    ],
+    "optional_actions": []
+  },
+  "research": {
+    "name": "Research",
+    "aliases": ["research", "research workspace", "research mode"],
+    "description": "Prepares research environment with web browser and search.",
+    "steps": [
+      {
+        "id": "browser",
+        "name": "Open Browser",
+        "tool": "open_app",
+        "args": {"target": "chrome"},
+        "required": true
+      },
+      {
+        "id": "search",
+        "name": "Open Google Search",
+        "tool": "open_website",
+        "args": {"url": "https://google.com"},
+        "required": false
+      }
+    ],
+    "optional_actions": []
+  },
+  "excel": {
+    "name": "Excel",
+    "aliases": ["excel", "excel workspace", "spreadsheet mode", "finance setup"],
+    "description": "Prepares spreadsheet environment with Excel.",
+    "steps": [
+      {
+        "id": "spreadsheet",
+        "name": "Open Excel",
+        "tool": "open_app",
+        "args": {"target": "excel"},
+        "required": true
+      }
+    ],
+    "optional_actions": []
+  }
+}

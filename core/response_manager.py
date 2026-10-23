@@ -108,7 +108,27 @@ class ResponseManager:
         return self.handle_response(StructuredResponse(ResponseType.INFORMATION, text, spoken_text=self.last_spoken_response), speak=speak)
 
     def greeting(self, query: str = "", speak: bool = True) -> dict:
-        text = self.local_engine.format_intent_response({"intent": "greeting", "raw": query})
+        try:
+            from core.social_engine import social_engine
+            q_lower = (query or "").lower()
+            sub = "general"
+            if "namaste" in q_lower:
+                sub = "namaste"
+            elif "morning" in q_lower:
+                sub = "morning"
+            elif "evening" in q_lower:
+                sub = "evening"
+            elif "afternoon" in q_lower:
+                sub = "afternoon"
+            elif "night" in q_lower:
+                sub = "night"
+            elif "how are you" in q_lower or "how r u" in q_lower:
+                sub = "how_are_you"
+            elif "what's up" in q_lower or "whats up" in q_lower:
+                sub = "whats_up"
+            text = social_engine.get_greeting(sub)
+        except Exception:
+            text = self.local_engine.format_intent_response({"intent": "greeting", "raw": query})
         resp = StructuredResponse(ResponseType.GREETING, text)
         return self.handle_response(resp, speak=speak)
 
@@ -117,8 +137,12 @@ class ResponseManager:
         resp = StructuredResponse(ResponseType.HELP, text)
         return self.handle_response(resp, speak=speak)
 
-    def identity_info(self, speak: bool = True) -> dict:
-        text = self.local_engine.get_identity_response()
+    def identity_info(self, sub_type: str = "general", speak: bool = True) -> dict:
+        try:
+            from core.social_engine import social_engine
+            text = social_engine.get_identity_response(sub_type)
+        except Exception:
+            text = self.local_engine.get_identity_response(sub_type)
         resp = StructuredResponse(ResponseType.IDENTITY, text)
         return self.handle_response(resp, speak=speak)
 

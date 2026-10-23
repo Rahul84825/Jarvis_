@@ -1,4 +1,5 @@
 {
   "preferred_browser": "chrome",
-  "fallback_browser": true
+  "fallback_browser": true,
+  "enable_cdp": true
 }

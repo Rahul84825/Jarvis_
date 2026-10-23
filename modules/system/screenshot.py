@@ -1,8 +1,10 @@
 import os
 import logging
-import pyautogui
 from datetime import datetime
 from pathlib import Path
+from core.lazy_loader import lazy_import
+
+pyautogui = lazy_import("pyautogui")
 
 logger = logging.getLogger("Jarvis.Screenshot")
 

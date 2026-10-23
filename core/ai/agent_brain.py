@@ -31,6 +31,9 @@ class AgentBrain:
         self.tools = self._register_tools()
         logger.info(f"AgentBrain initialized with {len(self.tools)} tools.")
 
+    def get_active_provider_name(self) -> str:
+        return self.provider_manager.get_active_provider_name()
+
     def _register_tools(self) -> Dict[str, Any]:
         """Exposes all tools from tool_registry and specialized communication modules."""
         tools_dict = {}
@@ -102,17 +105,32 @@ class AgentBrain:
 
         tools_block = "\n".join(tool_descriptions)
 
-        prompt = f"""You are JARVIS, an autonomous voice AI desktop assistant.
-You are speaking out loud to one person in a British service register ("Sir").
+        is_technical = any(kw in user_query.lower() for kw in [
+            "c++", "cpp", "python", "code", "algorithm", "dsa", "binary search", "sort",
+            "complexity", "leetcode", "debug", "compiler", "function", "array", "pointer",
+            "tree", "graph", "recursion", "dynamic programming", "time complexity"
+        ])
 
-CONVERSATIONAL RULES:
+        if is_technical:
+            rules = """TECHNICAL & PROGRAMMING RULES:
+- Provide clear, correct educational explanations and complete, idiomatic code (e.g. C++).
+- For algorithmic questions: explain the approach simply, provide code, dry run on sample data, analyze time and space complexity, and highlight edge cases or common pitfalls.
+- Maintain a respectful British service register ("Sir").
+- Do not fabricate compilation or execution results."""
+        else:
+            rules = """CONVERSATIONAL RULES:
 - BREVITY: Maximum 2 sentences. The median answer is under twelve words.
 - SPOKEN PROSE: Write natural prose. Never use markdown, bullet points, headers, or raw URLs.
 - "SIR" IS POSITIONAL:
   * Routine answer: "The render is complete, sir."
   * Urgent alert: "Sir, battery is at eleven percent."
   * Correction: "Actually, sir, the figure is lower."
-- REPORTING: State facts directly. No filler (um, well, let me check). No apologies (never say sorry).
+- REPORTING: State facts directly. No filler (um, well, let me check). No apologies (never say sorry)."""
+
+        prompt = f"""You are SANTRA, an autonomous voice AI desktop assistant.
+You are speaking to one person in a British service register ("Sir").
+
+{rules}
 
 {mem_context}
 
@@ -126,7 +144,7 @@ Action: <tool_name>
 Action Input: {{"param1": "value1"}}
 
 When you have the final answer, output:
-Final Answer: <concise spoken response for the user>
+Final Answer: <spoken response or explanation for the user>
 """
         return prompt
 
@@ -148,8 +166,27 @@ Final Answer: <concise spoken response for the user>
             logger.info(f"[AGENT_BRAIN] Executing deterministic workflow plan: '{local_plan['goal']}'")
             return self._execute_structured_plan(local_plan, t0)
 
+        # 1A. Check if a learned verified procedure handles this request deterministically (Phase 3 & 5)
+        from core.learning.procedure_learner import procedure_learner
+        learned_proc = procedure_learner.match_procedure(clean_text)
+        if learned_proc:
+            logger.info(f"[AGENT_BRAIN] Executing learned verified procedure: '{learned_proc['procedure_name']}'")
+            proc_res = procedure_learner.execute_procedure(learned_proc, executor=self.executor)
+            return {
+                "text": proc_res.get("message", "Procedure completed."),
+                "tool_used": proc_res.get("action"),
+                "tools_executed": [s.get("tool") for s in learned_proc.get("steps", [])],
+                "source": "Verified Learned Procedure",
+                "latency_ms": (time.time() - t0) * 1000,
+                "procedure_name": learned_proc.get("procedure_name"),
+                "success": proc_res.get("success", False)
+            }
+
         # 2. Check if AI Provider is enabled and available
-        if not self.provider_manager.is_ai_available():
+        forced_prov, _ = self.provider_manager.extract_model_prefix(clean_text)
+        prov_obj = self.provider_manager.get_provider(forced_prov) if forced_prov else None
+        is_avail = self.provider_manager.is_ai_available() or (prov_obj is not None and prov_obj.is_available())
+        if not is_avail:
             logger.info("[AGENT_BRAIN] AI Provider is unavailable/none. Running local fallback reasoning.")
             fallback_res = self._handle_offline_reasoning(clean_text, t0)
             return fallback_res
@@ -158,7 +195,7 @@ Final Answer: <concise spoken response for the user>
         sys_prompt = self._build_system_prompt(clean_text)
         messages: List[Dict[str, str]] = [{"role": "system", "content": sys_prompt}]
         if conversation_history:
-            messages.extend(conversation_history[-4:])
+            messages.extend(conversation_history[-6:])
         messages.append({"role": "user", "content": clean_text})
 
         step_count = 0
@@ -179,6 +216,17 @@ Final Answer: <concise spoken response for the user>
             if "Final Answer:" in llm_response:
                 final_text = llm_response.split("Final Answer:", 1)[1].strip()
                 persistent_memory.record_interaction(clean_text, final_text, intent="reasoning_agent")
+                if executed_tools:
+                    # Learn reusable procedure from successful ReAct tool sequence (Phase 3)
+                    proc_steps = [{"tool": t, "args": {}} for t in executed_tools]
+                    clean_proc_name = "proc_" + re.sub(r"[^\w\s]", "", clean_text).lower().replace(" ", "_")[:32]
+                    procedure_learner.learn_procedure(
+                        name=clean_proc_name,
+                        intent="COMPLEX_TASK",
+                        user_request=clean_text,
+                        steps=proc_steps,
+                        source="react_agent"
+                    )
                 return {
                     "text": final_text,
                     "tool_used": executed_tools[-1] if executed_tools else None,
@@ -244,7 +292,10 @@ Final Answer: <concise spoken response for the user>
                 }
 
         # Fallback synthesis after loop concludes
-        final_synth = "I have investigated and executed the necessary actions for your request, sir."
+        if executed_tools:
+            final_synth = "I have investigated and executed the necessary actions for your request, sir."
+        else:
+            final_synth = "I could not complete the reasoning request because the AI provider did not return a response, Sir."
         return {
             "text": final_synth,
             "tool_used": executed_tools[-1] if executed_tools else None,
@@ -255,26 +306,15 @@ Final Answer: <concise spoken response for the user>
         }
 
     def _verify_step(self, tool_name: str, args: dict, result: Any) -> Dict[str, Any]:
-        """Verifies whether a tool execution actually produced the expected real-world state."""
-        if isinstance(result, dict):
-            if result.get("success") is False:
-                return {"verified": False, "details": f"Tool reported failure: {result.get('message')}"}
-            if result.get("success") is True:
-                return {"verified": True, "details": "Tool verified success."}
-
-        if tool_name == "open_application":
-            app = args.get("application", "")
-            return {"verified": True, "details": f"Application '{app}' launch signal sent."}
-
-        if tool_name == "write_file":
-            path = args.get("path", "")
-            exists = os.path.exists(path)
-            return {"verified": exists, "details": f"File exists={exists} at {path}"}
-
-        if tool_name == "run_tests":
-            return {"verified": True, "details": "Test suite executed."}
-
-        return {"verified": True, "details": "Action completed."}
+        """Verifies whether a tool execution actually produced the expected real-world state using independent probes."""
+        from core.learning.verification_engine import verification_engine
+        res_dict = result if isinstance(result, dict) else {"success": bool(result), "data": result}
+        verif = verification_engine.verify_action_outcome(tool_name, args, res_dict)
+        return {
+            "verified": verif.get("verified", False),
+            "details": verif.get("evidence", {}).get("details", "Action completed."),
+            "outcome": verif.get("outcome")
+        }
 
     def _get_deterministic_local_plan(self, text: str) -> Optional[Dict[str, Any]]:
         """Provides local multi-step plans for standard developer workflows without needing external LLMs."""
@@ -357,9 +397,29 @@ Final Answer: <concise spoken response for the user>
     def _handle_offline_reasoning(self, text: str, t0: float) -> Dict[str, Any]:
         """Handles offline fallback for general queries when AI_PROVIDER='none'."""
         clean = text.lower().strip()
+        clean_norm = re.sub(r"[^\w\s]", "", clean).strip()
 
-        # Check help & capability questions
-        if any(term in clean for term in ["what can you do", "what can jarvis do", "capabilities", "what are your capabilities", "commands", "help"]):
+        # Check time & date queries
+        if any(term in clean_norm for term in ["what time is it", "whats the time", "tell me the time", "current time", "what is the time", "time now", "the time", "what time do you have", "what time is"]):
+            now_str = time.strftime("%I:%M %p").lstrip("0")
+            return {
+                "text": f"The current time is {now_str}, Sir.",
+                "source": "Local System Clock",
+                "tool_used": "get_time",
+                "latency_ms": (time.time() - t0) * 1000
+            }
+
+        if any(term in clean_norm for term in ["today s date", "todays date", "today date", "what is the date", "what is todays date", "what day is it", "current date", "what date is", "tell me the date"]):
+            date_str = time.strftime("%A, %B %d, %Y")
+            return {
+                "text": f"Today is {date_str}, Sir.",
+                "source": "Local System Clock",
+                "tool_used": "get_date",
+                "latency_ms": (time.time() - t0) * 1000
+            }
+
+        # Check explicit help & capability questions
+        if clean_norm in ["what can you do", "what can santra do", "what can jarvis do", "capabilities", "what are your capabilities", "show capabilities", "list commands", "show commands"]:
             from core.ai.tools.registry import tool_registry
             return {
                 "text": tool_registry.get_capability_summary(),
@@ -379,7 +439,7 @@ Final Answer: <concise spoken response for the user>
             return {"text": "Top headlines: " + "; ".join(headlines) if headlines else "No news available.", "source": "Local Fallback", "latency_ms": (time.time() - t0) * 1000}
 
         return {
-            "text": "I can control applications, Chrome, files, terminal tasks, and system functions, Sir. Say 'What can you do' to hear all capabilities.",
+            "text": "I cannot perform AI reasoning while offline, Sir. External intelligence providers are currently unavailable.",
             "source": "Local Fallback",
             "tool_used": None,
             "latency_ms": (time.time() - t0) * 1000

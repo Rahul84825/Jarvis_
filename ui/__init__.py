@@ -12,6 +12,7 @@ from ui.panels.telemetry_panel import TelemetryPanel
 from ui.panels.agent_trace_panel import AgentTracePanel
 from ui.panels.conversation_panel import ConversationPanel
 from ui.panels.quick_actions_panel import QuickActionsPanel
+from ui.panels.virtual_lab_panel import VirtualLabPanel, VirtualLabDialog
 from ui.widgets.hud_frame import HUDFrame
 from ui.widgets.status_badge import StatusBadgeWidget
 from ui.widgets.boot_overlay import BootOverlayWidget
@@ -27,6 +28,8 @@ __all__ = [
     "AgentTracePanel",
     "ConversationPanel",
     "QuickActionsPanel",
+    "VirtualLabPanel",
+    "VirtualLabDialog",
     "HUDFrame",
     "StatusBadgeWidget",
     "BootOverlayWidget"

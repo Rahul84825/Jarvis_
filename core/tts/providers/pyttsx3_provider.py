@@ -31,14 +31,22 @@ class Pyttsx3Provider(BaseTTS):
         try:
             import pyttsx3
             engine = pyttsx3.init()
-            rate_str = getattr(config, "tts_rate", "+15%")
+            
+            # Volume setting (0.0 to 1.0)
             try:
-                base_rate = 200
+                vol = float(getattr(config, "playback_volume", 0.70))
+                engine.setProperty("volume", max(0.1, min(1.0, vol)))
+            except Exception:
+                engine.setProperty("volume", 0.70)
+
+            rate_str = getattr(config, "tts_rate", "+0%")
+            try:
+                base_rate = 165
                 if "%" in rate_str:
                     pct = int(rate_str.replace("%", "").replace("+", ""))
                     engine.setProperty("rate", int(base_rate * (1 + pct / 100)))
             except Exception:
-                engine.setProperty("rate", 220)
+                engine.setProperty("rate", 165)
 
             engine.save_to_file(text, temp_path)
             engine.runAndWait()

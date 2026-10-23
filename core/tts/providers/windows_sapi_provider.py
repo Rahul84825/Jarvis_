@@ -20,6 +20,8 @@ class WindowsSAPIProvider(BaseTTS):
 
     def _check_availability(self):
         try:
+            import pythoncom
+            pythoncom.CoInitialize()
             import win32com.client
             speaker = win32com.client.Dispatch("SAPI.SpVoice")
             voices = speaker.GetVoices()
@@ -62,13 +64,20 @@ class WindowsSAPIProvider(BaseTTS):
             stream = win32com.client.Dispatch("SAPI.SpFileStream")
 
             # Desired voice selection
-            preferred_voice = getattr(config, "sapi_voice", "David").lower()
+            preferred_voice = getattr(config, "sapi_voice", "Zira").lower()
             voices = speaker.GetVoices()
             for i in range(voices.Count):
                 desc = voices.Item(i).GetDescription().lower()
                 if preferred_voice in desc:
                     speaker.Voice = voices.Item(i)
                     break
+
+            # SAPI volume setting (0 to 100, default 70 for comfortable, polite listening)
+            try:
+                sapi_vol = int(getattr(config, "sapi_volume", 70))
+                speaker.Volume = max(0, min(100, sapi_vol))
+            except Exception:
+                speaker.Volume = 70
 
             # Rate mapping: SAPI rate is from -10 to +10 (0 is normal)
             rate_str = getattr(config, "tts_rate", "+0%")
@@ -79,7 +88,7 @@ class WindowsSAPIProvider(BaseTTS):
                     sapi_rate = max(-10, min(10, int(pct / 10)))
                     speaker.Rate = sapi_rate
             except Exception:
-                speaker.Rate = 0
+                speaker.Rate = -1
 
             # Open stream for writing (3 = SSFMCreateForWrite)
             stream.Open(temp_path, 3, False)

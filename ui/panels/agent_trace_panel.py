@@ -74,6 +74,10 @@ class AgentTracePanel(HUDFrame):
             self._layer_badge.setText("LAYER 2 // CONTEXT & UNDERSTANDING")
             self._layer_badge.setStyleSheet("color: #ffb300; font-weight: 800; font-size: 11px; letter-spacing: 1px;")
             self._layer_desc.setText("Conversational Context & Target Resolver")
+        elif "nvidia" in exec_str.lower() or "nemotron" in exec_str.lower() or "nemotron" in intent.lower():
+            self._layer_badge.setText("LAYER 3 // NVIDIA NEMOTRON REASONING")
+            self._layer_badge.setStyleSheet("color: #76b900; font-weight: 800; font-size: 11px; letter-spacing: 1px;")  # NVIDIA green
+            self._layer_desc.setText(f"Cloud Reasoning Brain ({exec_str})")
         else:
             self._layer_badge.setText("LAYER 3 // REASONING & PLANNING")
             self._layer_badge.setStyleSheet("color: #9d4edd; font-weight: 800; font-size: 11px; letter-spacing: 1px;")

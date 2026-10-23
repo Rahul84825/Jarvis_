@@ -30,8 +30,56 @@ class PersistentMemory:
         conn.row_factory = sqlite3.Row
         return conn
 
+    # Secret redaction suite to ensure keys and passwords never hit persistent storage
+    REDACTION_PATTERNS = [
+        (r"\bsk-[a-zA-Z0-9_-]{12,}\b", "[REDACTED_OPENAI_KEY]"),
+        (r"\bAIza[0-9A-Za-z-_]{30,40}\b", "[REDACTED_GEMINI_KEY]"),
+        (r"\bgh[pousr]_[A-Za-z0-9_]{36,255}\b", "[REDACTED_GITHUB_TOKEN]"),
+        (r"\bsk-ant-[a-zA-Z0-9_-]{20,}\b", "[REDACTED_ANTHROPIC_KEY]"),
+        (r"\bAKIA[0-9A-Z]{16}\b", "[REDACTED_AWS_KEY]"),
+        (r"(?i)\bBearer\s+[a-zA-Z0-9_\-\.]{15,}\b", "Bearer [REDACTED_TOKEN]"),
+        (r"(?i)(api[_-]?key|access[_-]?token)\s*[:=]\s*['\"]?([a-zA-Z0-9_\-]{16,})['\"]?", r"\1: [REDACTED_KEY]"),
+        (r"(?i)(password|secret|passwd)\s*[:=]\s*['\"]?([^'\"\s]{6,})['\"]?", r"\1: [REDACTED_PASSWORD]"),
+        (r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]+?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", "[REDACTED_PRIVATE_KEY]"),
+        (r"\beyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b", "[REDACTED_JWT]"),
+        (r"(?i)(?:postgres|mysql|mongodb|redis):\/\/[^:]+:[^@]+@[a-zA-Z0-9_\.\-]+(?::\d+)?\/[^\s\"']*", "[REDACTED_DATABASE_URI]")
+    ]
+
+    @classmethod
+    def sanitize_text(cls, text: str) -> str:
+        """Sanitizes sensitive tokens, API keys, and credentials from string values."""
+        if not isinstance(text, str):
+            return text
+        clean = text
+        for pattern, replacement in cls.REDACTION_PATTERNS:
+            clean = re.sub(pattern, replacement, clean)
+        return clean
+
+    @classmethod
+    def sanitize_data(cls, data: Any) -> Any:
+        """Recursively sanitizes sensitive information from dictionaries, lists, or strings."""
+        if isinstance(data, str):
+            return cls.sanitize_text(data)
+        elif isinstance(data, dict):
+            res = {}
+            for k, v in data.items():
+                clean_k = cls.sanitize_text(k) if isinstance(k, str) else k
+                k_lower = str(k).lower().strip()
+                if any(sec in k_lower for sec in ["password", "passwd", "secret"]):
+                    res[clean_k] = "[REDACTED_PASSWORD]"
+                elif any(sec in k_lower for sec in ["api_key", "apikey", "access_token"]):
+                    res[clean_k] = "[REDACTED_KEY]"
+                elif isinstance(v, str):
+                    res[clean_k] = cls.sanitize_text(v)
+                else:
+                    res[clean_k] = cls.sanitize_data(v)
+            return res
+        elif isinstance(data, list):
+            return [cls.sanitize_data(item) for item in data]
+        return data
+
     def _init_db(self):
-        """Initializes database schema if not present."""
+        """Initializes database schema with safe backward-compatible migrations."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
@@ -108,6 +156,102 @@ class PersistentMemory:
                 )
             """)
 
+            # Schema migrations tracker
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at REAL NOT NULL,
+                    description TEXT NOT NULL
+                )
+            """)
+
+            # Phase 2 & 3: Structured Execution Experiences
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS execution_experiences (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    user_request TEXT NOT NULL,
+                    normalized_intent TEXT NOT NULL,
+                    tool_or_procedure TEXT NOT NULL,
+                    execution_parameters TEXT NOT NULL,
+                    preconditions TEXT,
+                    environment TEXT,
+                    execution_outcome TEXT NOT NULL,
+                    verification_evidence TEXT,
+                    observed_failure TEXT,
+                    user_corrections TEXT,
+                    software_version TEXT DEFAULT '2.0.0',
+                    confidence REAL DEFAULT 1.0,
+                    applicable_conditions TEXT
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_exp_intent ON execution_experiences(normalized_intent)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_exp_timestamp ON execution_experiences(timestamp)")
+
+            # Phase 3: Verified Learned Procedures
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS learned_procedures (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    procedure_name TEXT UNIQUE NOT NULL,
+                    intent TEXT NOT NULL,
+                    trigger_patterns TEXT NOT NULL,
+                    steps TEXT NOT NULL,
+                    prerequisites TEXT,
+                    success_count INTEGER DEFAULT 0,
+                    failure_count INTEGER DEFAULT 0,
+                    last_verified_at REAL,
+                    confidence REAL DEFAULT 1.0,
+                    is_active INTEGER DEFAULT 1,
+                    source TEXT DEFAULT 'learned',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_proc_intent ON learned_procedures(intent)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_proc_active ON learned_procedures(is_active)")
+
+            # Phase 4: User Learned Preferences (Corrections, Aliases, Folders)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_learned_preferences (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    preference_type TEXT NOT NULL,
+                    trigger_key TEXT NOT NULL,
+                    preferred_value TEXT NOT NULL,
+                    evidence_source TEXT NOT NULL,
+                    confidence REAL DEFAULT 1.0,
+                    scope TEXT DEFAULT 'persistent',
+                    last_applied_at REAL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(preference_type, trigger_key)
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pref_type ON user_learned_preferences(preference_type)")
+
+            # Phase 5: Verified Reasoning & Local Computation Cache
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS verified_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query_hash TEXT UNIQUE NOT NULL,
+                    query_normalized TEXT NOT NULL,
+                    cached_response TEXT NOT NULL,
+                    source_provider TEXT NOT NULL,
+                    confidence REAL DEFAULT 1.0,
+                    is_dynamic INTEGER DEFAULT 0,
+                    access_count INTEGER DEFAULT 1,
+                    created_at REAL NOT NULL,
+                    last_accessed_at REAL NOT NULL,
+                    expires_at REAL
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_cache_hash ON verified_cache(query_hash)")
+
+            # Record migration 1
+            cursor.execute("""
+                INSERT OR IGNORE INTO schema_migrations (version, applied_at, description)
+                VALUES (1, ?, 'Phase 6/7: Added execution_experiences, learned_procedures, user_learned_preferences, verified_cache')
+            """, (time.time(),))
+
             conn.commit()
 
     # ==========================================
@@ -158,6 +302,20 @@ class PersistentMemory:
         except Exception as e:
             logger.error(f"Failed to fetch preferences: {e}")
             return {}
+
+    def delete_preference(self, key: str) -> bool:
+        """Deletes a specific user preference from user_profile."""
+        clean_key = key.lower().strip().replace(" ", "_")
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM user_profile WHERE key = ?", (clean_key,))
+                conn.commit()
+            logger.info(f"Deleted memory preference: {clean_key}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete preference '{key}': {e}")
+            return False
 
     # ==========================================
     # EPISODIC MEMORY
@@ -422,5 +580,437 @@ class PersistentMemory:
 
         return "\n".join(lines)
 
+    # ==========================================
+    # STRUCTURED EXECUTION EXPERIENCES (PHASE 2)
+    # ==========================================
+    def record_execution_experience(
+        self,
+        user_request: str,
+        normalized_intent: str,
+        tool_or_procedure: str,
+        execution_parameters: Dict[str, Any],
+        execution_outcome: str,
+        preconditions: Optional[Dict[str, Any]] = None,
+        environment: Optional[Dict[str, Any]] = None,
+        verification_evidence: Optional[Dict[str, Any]] = None,
+        observed_failure: Optional[str] = None,
+        user_corrections: Optional[str] = None,
+        software_version: str = "2.0.0",
+        confidence: float = 1.0,
+        applicable_conditions: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """Records a structured tool/procedure execution experience with verification evidence."""
+        sanitized_params = json.dumps(self.sanitize_data(execution_parameters or {}))
+        sanitized_preconditions = json.dumps(self.sanitize_data(preconditions or {}))
+        sanitized_env = json.dumps(self.sanitize_data(environment or {}))
+        sanitized_evidence = json.dumps(self.sanitize_data(verification_evidence or {}))
+        sanitized_app_cond = json.dumps(self.sanitize_data(applicable_conditions or {}))
+        sanitized_request = self.sanitize_text(user_request.strip())
+        sanitized_failure = self.sanitize_text(observed_failure) if observed_failure else None
+        sanitized_corrections = self.sanitize_text(user_corrections) if user_corrections else None
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO execution_experiences (
+                        timestamp, user_request, normalized_intent, tool_or_procedure,
+                        execution_parameters, preconditions, environment, execution_outcome,
+                        verification_evidence, observed_failure, user_corrections,
+                        software_version, confidence, applicable_conditions
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    time.time(), sanitized_request, normalized_intent.strip(), tool_or_procedure.strip(),
+                    sanitized_params, sanitized_preconditions, sanitized_env, execution_outcome.strip(),
+                    sanitized_evidence, sanitized_failure, sanitized_corrections,
+                    software_version, confidence, sanitized_app_cond
+                ))
+                conn.commit()
+                row_id = cursor.lastrowid
+                logger.info(f"Recorded execution experience #{row_id}: [{normalized_intent}] {tool_or_procedure} -> {execution_outcome}")
+                return row_id
+        except Exception as e:
+            logger.error(f"Failed to record execution experience: {e}")
+            return -1
+
+    def get_execution_experiences(
+        self,
+        limit: int = 20,
+        intent: Optional[str] = None,
+        outcome: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieves past execution experiences with deserialized parameters and verification evidence."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                query = "SELECT * FROM execution_experiences"
+                params = []
+                clauses = []
+                if intent:
+                    clauses.append("normalized_intent = ?")
+                    params.append(intent.strip())
+                if outcome:
+                    clauses.append("execution_outcome = ?")
+                    params.append(outcome.strip())
+                if clauses:
+                    query += " WHERE " + " AND ".join(clauses)
+                query += " ORDER BY id DESC LIMIT ?"
+                params.append(limit)
+
+                cursor.execute(query, tuple(params))
+                rows = cursor.fetchall()
+                results = []
+                for r in rows:
+                    item = dict(r)
+                    for field in ["execution_parameters", "preconditions", "environment", "verification_evidence", "applicable_conditions"]:
+                        if item.get(field):
+                            try:
+                                item[field] = json.loads(item[field])
+                            except Exception:
+                                pass
+                    results.append(item)
+                return results
+        except Exception as e:
+            logger.error(f"Failed to query execution experiences: {e}")
+            return []
+
+    # ==========================================
+    # VERIFIED LEARNED PROCEDURES (PHASE 3 & 6)
+    # ==========================================
+    def save_learned_procedure(
+        self,
+        procedure_name: str,
+        intent: str,
+        trigger_patterns: List[str],
+        steps: List[Dict[str, Any]],
+        prerequisites: Optional[Dict[str, Any]] = None,
+        confidence: float = 1.0,
+        source: str = "learned"
+    ) -> bool:
+        """Saves or updates a validated reusable procedure."""
+        clean_name = procedure_name.strip()
+        sanitized_triggers = json.dumps(self.sanitize_data(trigger_patterns or []))
+        sanitized_steps = json.dumps(self.sanitize_data(steps or []))
+        sanitized_prereqs = json.dumps(self.sanitize_data(prerequisites or {}))
+        now = time.time()
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO learned_procedures (
+                        procedure_name, intent, trigger_patterns, steps, prerequisites,
+                        confidence, source, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(procedure_name) DO UPDATE SET
+                        intent = excluded.intent,
+                        trigger_patterns = excluded.trigger_patterns,
+                        steps = excluded.steps,
+                        prerequisites = excluded.prerequisites,
+                        confidence = excluded.confidence,
+                        source = excluded.source,
+                        is_active = 1,
+                        updated_at = excluded.updated_at
+                """, (clean_name, intent.strip(), sanitized_triggers, sanitized_steps, sanitized_prereqs, confidence, source, now, now))
+                conn.commit()
+                logger.info(f"Saved verified learned procedure: '{clean_name}' (intent={intent}, steps={len(steps)})")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to save learned procedure '{procedure_name}': {e}")
+            return False
+
+    def get_learned_procedure(self, procedure_name: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a single learned procedure by name."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM learned_procedures WHERE procedure_name = ?", (procedure_name.strip(),))
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                data = dict(row)
+                data["trigger_patterns"] = json.loads(data["trigger_patterns"]) if data.get("trigger_patterns") else []
+                data["steps"] = json.loads(data["steps"]) if data.get("steps") else []
+                data["prerequisites"] = json.loads(data["prerequisites"]) if data.get("prerequisites") else {}
+                return data
+        except Exception as e:
+            logger.error(f"Failed to get learned procedure '{procedure_name}': {e}")
+            return None
+
+    def list_learned_procedures(self, intent: Optional[str] = None, active_only: bool = True) -> List[Dict[str, Any]]:
+        """Lists learned procedures matching intent and active state."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                query = "SELECT * FROM learned_procedures"
+                clauses = []
+                params = []
+                if active_only:
+                    clauses.append("is_active = 1")
+                if intent:
+                    clauses.append("intent = ?")
+                    params.append(intent.strip())
+                if clauses:
+                    query += " WHERE " + " AND ".join(clauses)
+                query += " ORDER BY confidence DESC, success_count DESC"
+
+                cursor.execute(query, tuple(params))
+                rows = cursor.fetchall()
+                results = []
+                for r in rows:
+                    data = dict(r)
+                    data["trigger_patterns"] = json.loads(data["trigger_patterns"]) if data.get("trigger_patterns") else []
+                    data["steps"] = json.loads(data["steps"]) if data.get("steps") else []
+                    data["prerequisites"] = json.loads(data["prerequisites"]) if data.get("prerequisites") else {}
+                    results.append(data)
+                return results
+        except Exception as e:
+            logger.error(f"Failed to list learned procedures: {e}")
+            return []
+
+    def update_procedure_reliability(self, procedure_name: str, success: bool, evidence: Optional[Dict[str, Any]] = None) -> bool:
+        """Dynamically adjusts procedure confidence and reliability history based on real outcome."""
+        proc = self.get_learned_procedure(procedure_name)
+        if not proc:
+            return False
+
+        current_conf = float(proc.get("confidence", 1.0))
+        success_count = int(proc.get("success_count", 0))
+        failure_count = int(proc.get("failure_count", 0))
+        now = time.time()
+
+        if success:
+            success_count += 1
+            new_conf = min(1.0, current_conf + 0.05)
+            is_active = 1
+            last_verified = now
+        else:
+            failure_count += 1
+            new_conf = max(0.0, current_conf - 0.25)
+            is_active = 1 if new_conf >= 0.40 else 0
+            last_verified = proc.get("last_verified_at")
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE learned_procedures
+                    SET success_count = ?, failure_count = ?, confidence = ?, is_active = ?, last_verified_at = ?, updated_at = ?
+                    WHERE procedure_name = ?
+                """, (success_count, failure_count, new_conf, is_active, last_verified, now, procedure_name))
+                conn.commit()
+                logger.info(f"Updated reliability for '{procedure_name}': success={success}, conf={current_conf:.2f}->{new_conf:.2f}, active={is_active}")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to update procedure reliability for '{procedure_name}': {e}")
+            return False
+
+    # ==========================================
+    # USER LEARNED PREFERENCES & CORRECTIONS (PHASE 4)
+    # ==========================================
+    def set_user_learned_preference(
+        self,
+        preference_type: str,
+        trigger_key: str,
+        preferred_value: str,
+        evidence_source: str = "user_correction",
+        confidence: float = 1.0,
+        scope: str = "persistent"
+    ) -> bool:
+        """Persists a learned user preference (app alias, folder mapping, tool preference)."""
+        clean_type = preference_type.lower().strip()
+        clean_key = trigger_key.lower().strip()
+        clean_val = str(preferred_value).strip()
+        now = time.time()
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO user_learned_preferences (
+                        preference_type, trigger_key, preferred_value, evidence_source,
+                        confidence, scope, last_applied_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(preference_type, trigger_key) DO UPDATE SET
+                        preferred_value = excluded.preferred_value,
+                        evidence_source = excluded.evidence_source,
+                        confidence = excluded.confidence,
+                        scope = excluded.scope,
+                        updated_at = excluded.updated_at
+                """, (clean_type, clean_key, clean_val, evidence_source, confidence, scope, now, now, now))
+                conn.commit()
+                logger.info(f"Recorded learned preference: [{clean_type}] {clean_key} -> '{clean_val}' (source={evidence_source})")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to set user learned preference: {e}")
+            return False
+
+    def get_user_learned_preference(
+        self,
+        preference_type: str,
+        trigger_key: str,
+        default: Optional[str] = None
+    ) -> Optional[str]:
+        """Retrieves a learned preference by type and trigger key."""
+        clean_type = preference_type.lower().strip()
+        clean_key = trigger_key.lower().strip()
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT preferred_value, confidence FROM user_learned_preferences
+                    WHERE preference_type = ? AND trigger_key = ?
+                """, (clean_type, clean_key))
+                row = cursor.fetchone()
+                if row and row["confidence"] >= 0.50:
+                    return row["preferred_value"]
+                return default
+        except Exception as e:
+            logger.error(f"Failed to get user learned preference: {e}")
+            return default
+
+    def get_all_learned_preferences(self, preference_type: Optional[str] = None) -> Dict[str, str]:
+        """Retrieves all learned preferences, optionally filtered by type."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                if preference_type:
+                    cursor.execute("""
+                        SELECT trigger_key, preferred_value FROM user_learned_preferences
+                        WHERE preference_type = ? AND confidence >= 0.50
+                    """, (preference_type.lower().strip(),))
+                else:
+                    cursor.execute("""
+                        SELECT trigger_key, preferred_value FROM user_learned_preferences
+                        WHERE confidence >= 0.50
+                    """)
+                rows = cursor.fetchall()
+                return {r["trigger_key"]: r["preferred_value"] for r in rows}
+        except Exception as e:
+            logger.error(f"Failed to get all learned preferences: {e}")
+            return {}
+
+    def delete_user_learned_preference(self, preference_type: str, trigger_key: str) -> bool:
+        """Deletes a learned preference."""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    DELETE FROM user_learned_preferences
+                    WHERE preference_type = ? AND trigger_key = ?
+                """, (preference_type.lower().strip(), trigger_key.lower().strip()))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Failed to delete learned preference: {e}")
+            return False
+
+    # ==========================================
+    # VERIFIED REASONING CACHE (PHASE 5)
+    # ==========================================
+    @staticmethod
+    def _is_dynamic_query(clean_query: str) -> bool:
+        """Determines if a query requires fresh information and must NEVER be served from static cache."""
+        clean = clean_query.lower().strip()
+        dynamic_markers = [
+            "time", "clock", "date", "today", "tomorrow", "yesterday",
+            "weather", "forecast", "temperature", "news", "headline",
+            "battery", "power", "cpu", "memory", "ram", "disk", "gpu",
+            "status", "process", "running", "active tab", "open tabs", "current"
+        ]
+        return any(re.search(rf"\b{re.escape(m)}\b", clean) for m in dynamic_markers)
+
+    def get_cached_query(self, query: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a cached factual reasoning response if valid and not dynamic."""
+        clean = query.lower().strip()
+        if self._is_dynamic_query(clean):
+            return None
+
+        import hashlib
+        q_hash = hashlib.sha256(clean.encode("utf-8")).hexdigest()
+        now = time.time()
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT cached_response, source_provider, confidence, expires_at, access_count
+                    FROM verified_cache
+                    WHERE query_hash = ?
+                """, (q_hash,))
+                row = cursor.fetchone()
+                if not row:
+                    return None
+
+                expires_at = row["expires_at"]
+                if expires_at and now > expires_at:
+                    cursor.execute("DELETE FROM verified_cache WHERE query_hash = ?", (q_hash,))
+                    conn.commit()
+                    return None
+
+                cursor.execute("""
+                    UPDATE verified_cache
+                    SET access_count = access_count + 1, last_accessed_at = ?
+                    WHERE query_hash = ?
+                """, (now, q_hash))
+                conn.commit()
+
+                return {
+                    "text": row["cached_response"],
+                    "source": f"{row['source_provider']} (Verified Cache)",
+                    "confidence": row["confidence"],
+                    "cached": True
+                }
+        except Exception as e:
+            logger.error(f"Failed to get cached query: {e}")
+            return None
+
+    def set_cached_query(
+        self,
+        query: str,
+        response: str,
+        source_provider: str = "AI Provider",
+        confidence: float = 1.0,
+        ttl_seconds: Optional[float] = None
+    ) -> bool:
+        """Caches a verified reasoning response for a static factual query."""
+        clean = query.lower().strip()
+        if self._is_dynamic_query(clean):
+            return False
+        if not response or len(response.strip()) < 5:
+            return False
+
+        import hashlib
+        q_hash = hashlib.sha256(clean.encode("utf-8")).hexdigest()
+        now = time.time()
+        expires_at = (now + ttl_seconds) if ttl_seconds else None
+        sanitized_resp = self.sanitize_text(response.strip())
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO verified_cache (
+                        query_hash, query_normalized, cached_response, source_provider,
+                        confidence, is_dynamic, access_count, created_at, last_accessed_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?, ?)
+                    ON CONFLICT(query_hash) DO UPDATE SET
+                        cached_response = excluded.cached_response,
+                        source_provider = excluded.source_provider,
+                        confidence = excluded.confidence,
+                        last_accessed_at = excluded.last_accessed_at,
+                        expires_at = excluded.expires_at
+                """, (q_hash, clean, sanitized_resp, source_provider, confidence, now, now, expires_at))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Failed to cache query: {e}")
+            return False
+
+# Module-level aliases
+sanitize_text = PersistentMemory.sanitize_text
+sanitize_data = PersistentMemory.sanitize_data
+
 # Global singleton
 persistent_memory = PersistentMemory()
+

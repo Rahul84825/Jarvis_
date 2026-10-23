@@ -24,6 +24,7 @@ INTENT_RISK_MAPPING = {
     "status_request": RiskLevel.MEDIUM,
     "volume_control": RiskLevel.MEDIUM,
     "lock_pc": RiskLevel.MEDIUM,
+    "sleep_assistant": RiskLevel.LOW,
     "sleep_pc": RiskLevel.HIGH,
     "restart_pc": RiskLevel.HIGH,
     "shutdown_pc": RiskLevel.HIGH,
@@ -47,7 +48,9 @@ INTENT_RISK_MAPPING = {
 def get_action_risk_level(intent: str, action: str = None) -> str:
     """Determines the risk level for a given intent/action combination."""
     if intent == "system_control":
-        if action in ["shutdown", "shutdown_pc"]:
+        if action in ["sleep_assistant", "enter_sleep", "sleep_mode"]:
+            return RiskLevel.LOW
+        elif action in ["shutdown", "shutdown_pc"]:
             return RiskLevel.HIGH
         elif action in ["restart", "restart_pc"]:
             return RiskLevel.HIGH

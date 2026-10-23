@@ -109,6 +109,65 @@ class CommandExecutor:
                 success = res["success"]
                 message = res["message"]
 
+            elif intent in ["browser_action", "browser.action"]:
+                from core.os.browser_automation import browser_automation_engine
+                from core.os.browser_intent import BrowserIntent, BrowserActionType, SearchScope, TabPreference
+
+                action_type_str = intent_node.get("action_type") or intent_node.get("action", "unknown")
+                try:
+                    b_action = BrowserActionType(action_type_str)
+                except ValueError:
+                    b_action = BrowserActionType.UNKNOWN
+
+                tab_pref_str = intent_node.get("tab_preference", "default")
+                try:
+                    t_pref = TabPreference(tab_pref_str)
+                except ValueError:
+                    t_pref = TabPreference.DEFAULT
+
+                b_intent = BrowserIntent(
+                    action_type=b_action,
+                    target_browser=intent_node.get("target_browser") or intent_node.get("browser", "chrome"),
+                    url=intent_node.get("url"),
+                    site_name=intent_node.get("site_name") or intent_node.get("target"),
+                    domain=intent_node.get("domain"),
+                    search_query=intent_node.get("search_query") or intent_node.get("query", ""),
+                    prompt_query=intent_node.get("prompt_query", ""),
+                    tab_preference=t_pref,
+                    input_purpose=intent_node.get("input_purpose", "search_box"),
+                    submit=intent_node.get("submit", True),
+                    requires_confirmation=intent_node.get("requires_confirmation", False),
+                    clarification_prompt=intent_node.get("clarification_prompt"),
+                    raw_text=intent_node.get("raw_text", ""),
+                    metadata=intent_node.get("metadata", {})
+                )
+
+                res = browser_automation_engine.execute_intent(b_intent)
+                success = bool(res.get("success", False))
+                message = res.get("message", "")
+                if res.get("requires_clarification"):
+                    result = {
+                        "success": True,
+                        "outcome": CommandOutcome.SUCCESS.value,
+                        "message": message,
+                        "intent": intent,
+                        "requires_clarification": True,
+                        "clarification_prompt": message
+                    }
+                    self._record_history(intent_node, result)
+                    return result
+                elif res.get("pending_confirmation"):
+                    result = {
+                        "success": False,
+                        "outcome": CommandOutcome.PERMISSION_DENIED.value,
+                        "message": message,
+                        "intent": intent,
+                        "pending_confirmation": True
+                    }
+                    self._record_history(intent_node, result)
+                    return result
+                outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+
             elif intent == "open_website":
                 browser_name = intent_node.get("browser")
                 url = intent_node.get("url")
@@ -135,7 +194,7 @@ class CommandExecutor:
 
             elif intent == "web_search":
                 provider = intent_node.get("provider", "google")
-                query = intent_node.get("target") or intent_node.get("query", "")
+                query = intent_node.get("query") or intent_node.get("target", "")
                 empty_q = intent_node.get("empty_query", False) or not query or not query.strip()
 
                 if empty_q:
@@ -158,7 +217,11 @@ class CommandExecutor:
 
                 logger.info("[SEARCH] Tool execution started")
                 try:
-                    res = self.browser_mgr.search(query, provider=provider)
+                    browser_target = intent_node.get("browser")
+                    if browser_target and browser_target != "default":
+                        res = self.browser_mgr.search(query, provider=provider, browser_name=browser_target)
+                    else:
+                        res = self.browser_mgr.search(query, provider=provider)
                     success = bool(res.get("success", False))
                     message = res.get("message", "")
                     if success:
@@ -280,15 +343,315 @@ class CommandExecutor:
                     outcome = CommandOutcome.MISSING_ARGUMENT
                     message = "Which application should I open, Sir?"
                 else:
-                    opened = app_control.open_app(target)
-                    if not opened:
-                        success = False
+                    res = app_control.launch_application(target)
+                    success = bool(res.get("success", False))
+                    message = res.get("message", f"{target.title()} is open, Sir.")
+                    raw_outcome = res.get("outcome", "SUCCESS" if success else "EXECUTION_FAILED")
+                    if raw_outcome == "AMBIGUOUS":
+                        outcome = CommandOutcome.MISSING_ARGUMENT
+                    elif raw_outcome == "UNSUPPORTED_CAPABILITY":
                         outcome = CommandOutcome.UNSUPPORTED_CAPABILITY
-                        message = "That application isn't installed, Sir."
-                    else:
-                        success = True
+                    elif success:
                         outcome = CommandOutcome.SUCCESS
-                        message = f"{target.title()} is open, Sir."
+                    else:
+                        outcome = CommandOutcome.EXECUTION_FAILED
+
+            elif intent in ["application.properties", "app_properties"]:
+                if not target:
+                    success = False
+                    outcome = CommandOutcome.MISSING_ARGUMENT
+                    message = "Which application's properties should I show, Sir?"
+                else:
+                    res = app_control.open_app_properties(target)
+                    success = bool(res.get("success", False))
+                    message = res.get("message", "")
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+
+            elif intent in ["application.install_dir", "app_install_dir"]:
+                if not target:
+                    success = False
+                    outcome = CommandOutcome.MISSING_ARGUMENT
+                    message = "Which application's installation folder should I open, Sir?"
+                else:
+                    res = app_control.open_app_install_dir(target)
+                    success = bool(res.get("success", False))
+                    message = res.get("message", "")
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+
+            elif intent in ["application.settings", "app_settings"]:
+                if not target:
+                    success = False
+                    outcome = CommandOutcome.MISSING_ARGUMENT
+                    message = "Which application's settings should I open, Sir?"
+                else:
+                    res = app_control.open_app_settings(target)
+                    success = bool(res.get("success", False))
+                    message = res.get("message", "")
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+
+            elif intent in ["application.metadata", "app_metadata"]:
+                if not target:
+                    success = False
+                    outcome = CommandOutcome.MISSING_ARGUMENT
+                    message = "Which application's version or details should I check, Sir?"
+                else:
+                    res = app_control.get_app_metadata(target)
+                    success = bool(res.get("success", False))
+                    message = res.get("message", "")
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.UNSUPPORTED_CAPABILITY
+
+            elif intent in ["application.status", "is_installed"]:
+                if not target:
+                    success = False
+                    outcome = CommandOutcome.MISSING_ARGUMENT
+                    message = "Which application should I check for, Sir?"
+                else:
+                    res = app_control.is_app_installed(target)
+                    success = True
+                    message = res.get("message", "")
+                    outcome = CommandOutcome.SUCCESS
+
+            elif intent in ["application.list_installed", "list_installed_apps"]:
+                cat = intent_node.get("category")
+                q = intent_node.get("query")
+                res = app_control.list_installed_apps(category=cat)
+                success = True
+                message = res.get("message", "")
+                outcome = CommandOutcome.SUCCESS
+
+            elif intent in ["application.refresh", "refresh_apps"]:
+                res = app_control.refresh_apps()
+                success = True
+                message = res.get("message", "Application registry refreshed.")
+                outcome = CommandOutcome.SUCCESS
+
+            elif intent in [
+                "desktop.get_context", "desktop.enter_text", "desktop.search_in_app",
+                "desktop.replace_selection", "desktop.send_message",
+                "desktop_interaction.type_text", "desktop_interaction.write_reply",
+                "desktop_interaction.search_app", "desktop_interaction.replace_selection",
+                "desktop_interaction.continue_writing", "desktop_interaction.edit_draft",
+                "desktop_interaction.paste_text", "desktop_interaction.send_message"
+            ]:
+                from core.interaction import desktop_context_service, text_entry_service
+                
+                if intent == "desktop.get_context":
+                    ctx = desktop_context_service.get_current_context(
+                        explicit_destination=target,
+                        allow_ocr=bool(intent_node.get("allow_ocr", False))
+                    )
+                    success = True
+                    targets_summary = ", ".join([t.name for t in ctx.available_targets[:3]]) or "No text fields identified"
+                    message = f"Active window: '{ctx.window_title}' ({ctx.foreground_app}). Available targets: {targets_summary}."
+                    outcome = CommandOutcome.SUCCESS
+
+                elif intent in ["desktop.send_message", "desktop_interaction.send_message"]:
+                    send_res = text_entry_service.execute_send_message(confirm=confirm)
+                    success = bool(send_res.get("success", False))
+                    message = send_res.get("message", "")
+                    if send_res.get("pending_confirmation"):
+                        return {
+                            "success": False,
+                            "outcome": CommandOutcome.PERMISSION_DENIED.value,
+                            "message": message,
+                            "intent": intent,
+                            "action": "send_message",
+                            "pending_confirmation": True,
+                            "pending_intent": send_res.get("pending_intent")
+                        }
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+
+                elif intent in ["desktop.search_in_app", "desktop_interaction.search_app"]:
+                    query = intent_node.get("text") or intent_node.get("query") or target or ""
+                    dest = intent_node.get("destination") or intent_node.get("explicit_destination")
+                    res = text_entry_service.enter_text(
+                        text=query,
+                        action="search_in_app",
+                        explicit_destination=dest,
+                        submit=True
+                    )
+                    success = bool(res.get("success", False))
+                    message = res.get("message", "")
+                    if res.get("requires_clarification") or res.get("requires_focus"):
+                        return {
+                            "success": True,
+                            "outcome": CommandOutcome.SUCCESS.value,
+                            "message": message,
+                            "intent": intent,
+                            "requires_clarification": res.get("requires_clarification", False),
+                            "requires_focus": res.get("requires_focus", False),
+                            "pending_intent": res.get("pending_intent")
+                        }
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+
+                elif intent in ["desktop.replace_selection", "desktop_interaction.replace_selection"]:
+                    text_content = intent_node.get("text") or target or ""
+                    res = text_entry_service.enter_text(text=text_content, mode="replace")
+                    success = bool(res.get("success", False))
+                    message = res.get("message", "")
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+
+                else:
+                    # Generic text entry or reply drafting
+                    text_content = intent_node.get("text") or target or ""
+                    dest = intent_node.get("destination") or intent_node.get("explicit_destination")
+                    act = "write_reply" if "reply" in intent else "enter_text"
+                    mode = intent_node.get("mode", "insert")
+                    res = text_entry_service.enter_text(
+                        text=text_content,
+                        action=act,
+                        explicit_destination=dest,
+                        mode=mode
+                    )
+                    success = bool(res.get("success", False))
+                    message = res.get("message", "")
+                    if res.get("requires_clarification") or res.get("requires_focus"):
+                        return {
+                            "success": True,
+                            "outcome": CommandOutcome.SUCCESS.value,
+                            "message": message,
+                            "intent": intent,
+                            "requires_clarification": res.get("requires_clarification", False),
+                            "requires_focus": res.get("requires_focus", False),
+                            "pending_intent": res.get("pending_intent")
+                        }
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+
+            # ---------------------------------------------------------
+            # VISION & SCREEN INTELLIGENCE
+            # ---------------------------------------------------------
+            elif intent in ["screen.analyze", "screen_understanding.analyze", "screen_understanding"]:
+                from core.vision.screen_understanding import screen_understanding_engine
+                from core.vision.models import CaptureTarget
+                prompt_val = intent_node.get("prompt") or intent_node.get("query") or target or "Explain what is visible on my screen."
+                target_scope = intent_node.get("target_scope") or intent_node.get("target") or "primary_screen"
+                try:
+                    cap_target = CaptureTarget(target_scope)
+                except ValueError:
+                    cap_target = CaptureTarget.PRIMARY_SCREEN
+                from core.ai.provider_manager import ProviderManager
+                prov_mgr = getattr(self, "provider_manager", None) or ProviderManager()
+                res_analysis = screen_understanding_engine.analyze_screen(prompt=prompt_val, provider_manager=prov_mgr)
+                success = True
+                message = res_analysis.get("full_text") or res_analysis.get("summary") or "Screen analyzed."
+                outcome = CommandOutcome.SUCCESS
+
+            elif intent in ["screen.explain", "screen_understanding.explain", "vision_explain"]:
+                from core.vision.explain_engine import explain_engine
+                query_val = intent_node.get("query") or intent_node.get("text") or target or "Explain my screen."
+                force_fresh = bool(intent_node.get("force_fresh", False))
+                from core.ai.provider_manager import ProviderManager
+                prov_mgr = getattr(self, "provider_manager", None) or ProviderManager()
+                explanation = explain_engine.explain(query=query_val, provider_manager=prov_mgr, force_fresh_capture=force_fresh)
+                success = True
+                message = explanation.detailed_text or explanation.summary
+                outcome = CommandOutcome.SUCCESS
+
+            # ---------------------------------------------------------
+            # FILE CREATION, SEARCH & PROJECT MANAGEMENT
+            # ---------------------------------------------------------
+            elif intent in ["files.create", "file_management.create_file", "file_creation"]:
+                from core.files.file_creator import file_creator
+                fn = intent_node.get("filename") or "script.py"
+                dest = intent_node.get("destination") or "Desktop"
+                content = intent_node.get("content") or intent_node.get("text") or "# Created by JARVIS\n"
+                lang = intent_node.get("language")
+                allow_ow = bool(confirm or intent_node.get("allow_overwrite", False))
+                res_fc = file_creator.create_file(filename=fn, destination=dest, content=content, language=lang, allow_overwrite=allow_ow)
+                if res_fc.requires_confirmation:
+                    return {
+                        "success": False,
+                        "outcome": CommandOutcome.PERMISSION_DENIED.value,
+                        "message": res_fc.message,
+                        "intent": intent,
+                        "pending_confirmation": True,
+                        "pending_intent": intent_node
+                    }
+                success = res_fc.success
+                message = res_fc.message
+                outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+
+            elif intent in ["files.search", "file_management.search", "file_search"]:
+                from core.files.file_memory import file_memory_manager
+                q_search = intent_node.get("query") or target or ""
+                ext_filter = intent_node.get("extension")
+                proj_alias = intent_node.get("project_alias")
+                found_records = file_memory_manager.search_files(query=q_search, extension=ext_filter, project_alias=proj_alias)
+                success = True
+                if found_records:
+                    rec_list = "\n".join([f"- {r.filename} ({r.path})" for r in found_records[:5]])
+                    message = f"Found {len(found_records)} matching files:\n{rec_list}"
+                else:
+                    message = f"No files matching '{q_search}' were found in indexed folders."
+                outcome = CommandOutcome.SUCCESS
+
+            elif intent in ["files.open", "file_management.open", "file_open"]:
+                from core.files.file_memory import file_memory_manager
+                f_path = intent_node.get("file_path") or target or ""
+                success = file_memory_manager.open_in_explorer(f_path)
+                message = f"Opened file in Explorer: {f_path}" if success else f"Could not find or open file: {f_path}"
+                outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+
+            elif intent in ["project.inspect", "project_management.inspect", "project_inspect"]:
+                from core.files.project_inspector import project_inspector
+                p_path = intent_node.get("project_path") or target or "."
+                p_meta = project_inspector.inspect_project(p_path)
+                success = True
+                message = f"Project '{p_meta.name}' uses framework '{p_meta.framework}' and package manager '{p_meta.package_manager}'."
+                outcome = CommandOutcome.SUCCESS
+
+            elif intent in ["ai.get_providers", "ai_management.list_providers", "ai_providers"]:
+                from core.ai.provider_settings import provider_settings_manager
+                provs = provider_settings_manager.list_providers_summary()
+                prov_lines = [f"- {p['name']} ({p['provider_id']}): model={p['model']}, priority={p['priority']}, enabled={p['enabled']}" for p in provs]
+                success = True
+                message = "Configured AI Providers:\n" + "\n".join(prov_lines)
+                outcome = CommandOutcome.SUCCESS
+
+            elif intent in ["ai.update_provider", "ai_management.update_provider"]:
+                from core.ai.provider_settings import provider_settings_manager
+                pid = intent_node.get("provider_id") or target or ""
+                new_key = intent_node.get("api_key")
+                new_model = intent_node.get("model")
+                new_enabled = intent_node.get("enabled")
+                if new_key:
+                    provider_settings_manager.update_provider_key(pid, new_key)
+                if new_model:
+                    provider_settings_manager.update_provider_model(pid, new_model)
+                if new_enabled is not None:
+                    provider_settings_manager.set_provider_enabled(pid, bool(new_enabled))
+                success = True
+                message = f"Updated settings for AI provider '{pid}'."
+                outcome = CommandOutcome.SUCCESS
+
+            elif intent in ["ai.cache_stats", "ai_management.cache_stats"]:
+                from core.ai.caching import nemotron_cache
+                stats = nemotron_cache.get_stats()
+                success = True
+                message = (
+                    f"JARVIS AI Cache Statistics:\n"
+                    f"- Total Lookups: {stats.total_lookups}\n"
+                    f"- Total Cache Hits: {stats.total_hits} (Exact: {stats.exact_hits}, Semantic: {stats.semantic_hits}, Knowledge: {stats.knowledge_hits}, Task: {stats.task_hits})\n"
+                    f"- Outbound API Calls Saved: {stats.api_calls_saved} ({stats.duplicates_avoided} concurrent calls coalesced)\n"
+                    f"- Hit Rate: {stats.hit_rate_pct:.1f}%\n"
+                    f"- Bypasses: {stats.bypasses} | Misses: {stats.misses}"
+                )
+                outcome = CommandOutcome.SUCCESS
+
+            elif intent in ["ai.clear_cache", "ai_management.clear_cache"]:
+                from core.ai.caching import nemotron_cache
+                cleared_count = nemotron_cache.clear()
+                success = True
+                message = f"Cleared {cleared_count} cached entries from the AI cache."
+                outcome = CommandOutcome.SUCCESS
+
+            elif intent in ["ai.forget_cache", "ai_management.forget_cache"]:
+                from core.ai.caching import nemotron_cache
+                target_q = target or intent_node.get("query", "")
+                disputed_count = nemotron_cache.mark_disputed(target_q)
+                success = True
+                message = f"Marked {disputed_count} cached answer(s) as disputed. Fresh responses will be generated."
+                outcome = CommandOutcome.SUCCESS
 
             elif intent == "command_management":
                 from core.custom_commands.command_manager import command_manager
@@ -414,10 +777,101 @@ class CommandExecutor:
                     res = self.system_info_mgr.get_network_ip()
                 elif action == "uptime_info":
                     res = self.system_info_mgr.get_uptime()
+                elif action in ["battery_info", "battery", "power"]:
+                    from core.os.power_manager import power_manager
+                    res = power_manager.get_battery_telemetry()
+                    success = res.get("success", False)
+                    message = res.get("message", "Battery telemetry unavailable.")
                 else:
                     res = self.system_info_mgr.get_cpu_info()
-                success = res["success"]
-                message = res["text"]
+                if "text" in res:
+                    success = res["success"]
+                    message = res["text"]
+
+            elif intent in ["power_control", "power.scheme"]:
+                from core.os.power_manager import power_manager
+                if action == "report":
+                    res = power_manager.get_acer_oem_report()
+                    success = True
+                    message = f"{res['laptop_model']}. Active plan: {res['active_windows_scheme']}. {res['battery_status']} {res['integration_status']}"
+                else:
+                    res = power_manager.set_power_scheme(target or "Balanced")
+                    success = res.get("success", False)
+                    message = res.get("message", "")
+
+            elif intent in ["workspace_control", "workspace.launch", "launch_workspace"]:
+                from core.os.workspace_manager import workspace_manager
+                confirmed = intent_node.get("confirmed_optional_ids")
+                declined = intent_node.get("declined_optional_ids")
+                always = intent_node.get("always_optional_ids")
+                never = intent_node.get("never_optional_ids")
+                res = workspace_manager.execute_workspace(target, confirmed_optional_ids=confirmed, declined_optional_ids=declined, always_optional_ids=always, never_optional_ids=never)
+                success = res.get("success", False)
+                message = res.get("message", "")
+                if res.get("needs_confirmation"):
+                    return {
+                        "success": True,
+                        "pending_confirmation": True,
+                        "is_conversational_confirmation": True,
+                        "intent": "workspace_optional_confirmation",
+                        "action": "confirm_optional",
+                        "target": target,
+                        "workspace_id": res.get("workspace_id"),
+                        "optional_id": res.get("optional_id"),
+                        "message": res.get("prompt"),
+                        "spoken": True
+                    }
+
+            elif intent in ["power.scheme", "power_scheme", "power_control"]:
+                from core.os.power_manager import power_manager
+                act = intent_node.get("action") or action or "get"
+                scheme_target = target or intent_node.get("target") or (intent_node.get("entities", {}).get("target") if isinstance(intent_node.get("entities"), dict) else None) or "Balanced"
+                if act in ["set", "set_scheme", "switch", "activate"]:
+                    res = power_manager.set_power_scheme(scheme_target)
+                    success = res.get("success", False)
+                    message = res.get("message", "")
+                else:
+                    active = power_manager.get_active_scheme()
+                    success = True
+                    message = f"Active Windows power plan is '{active['name'] if active else 'Balanced'}'."
+
+            elif intent in ["battery.status", "battery_telemetry"]:
+                from core.os.power_manager import power_manager
+                res = power_manager.get_battery_telemetry()
+                success = res.get("success", False)
+                message = res.get("message", "")
+
+            elif intent == "acer_oem_control":
+                from core.os.power_manager import power_manager
+                if action == "set_profile":
+                    res = power_manager.acer_adapter.set_oem_profile(target)
+                    success = res.get("success", False)
+                    message = res.get("message", "")
+                elif action == "set_battery_threshold":
+                    val = int(target or 80) if str(target or "").isdigit() else 80
+                    res = power_manager.acer_adapter.set_battery_threshold(val)
+                    success = res.get("success", False)
+                    message = res.get("message", "")
+                elif action == "launch_control_center":
+                    res = power_manager.acer_adapter.launch_control_center()
+                    success = res.get("success", False)
+                    message = res.get("message", "")
+                else:
+                    rep = power_manager.get_acer_oem_report()
+                    success = True
+                    message = rep.get("integration_status", "")
+
+            elif intent in ["system_telemetry", "hardware_status"]:
+                from core.os.power_manager import power_manager
+                tel_target = (target or "").lower()
+                if tel_target in ["power", "battery"]:
+                    res = power_manager.get_battery_telemetry()
+                    success = res.get("success", False)
+                    message = res.get("message", "")
+                else:
+                    status_dict = power_manager.get_comprehensive_status()
+                    success = True
+                    message = f"Power plan: {status_dict['active_windows_power_plan']}, Battery: {status_dict['battery_percentage']}%, Charging: {status_dict['battery_charging_status']}."
 
             elif intent == "project_control":
                 success = self.project_registry.set_current_project(target)
@@ -472,7 +926,7 @@ class CommandExecutor:
                 success = res.get("success", False)
                 message = res.get("message", "YouTube playback updated.")
 
-            elif intent == "content_generation":
+            elif intent in ["content_generation", "explain_concept"]:
                 ctype = intent_node.get("content_type")
                 if not ctype:
                     if action == "draft_email":
@@ -812,6 +1266,8 @@ class CommandExecutor:
             return system_control.unmute_volume()
         elif action in ["lock", "lock_pc"]:
             return system_control.lock_pc()
+        elif action in ["sleep_assistant", "enter_sleep", "sleep_mode"]:
+            return True, "Entering sleep mode, Sir. Say 'Jarvis' to wake me."
         elif action in ["sleep", "sleep_pc"]:
             return system_control.sleep_pc()
         elif action in ["hibernate", "hibernate_pc"]:
@@ -827,8 +1283,33 @@ class CommandExecutor:
             if success:
                 return True, metrics["message"]
             return False, "Failed to retrieve system resource metrics."
+        elif action in ["enable_startup", "start_with_windows"]:
+            from core.startup import enable_startup
+            ok = enable_startup()
+            if ok:
+                return True, "Jarvis is now configured to start automatically with Windows minimized to the system tray, Sir."
+            return False, "I was unable to update the Windows startup registry. Please ensure permissions are granted."
+        elif action in ["disable_startup", "stop_starting_with_windows"]:
+            from core.startup import disable_startup
+            ok = disable_startup()
+            if ok:
+                return True, "Automatic Windows startup has been disabled for Jarvis, Sir."
+            return False, "I was unable to remove Jarvis from the Windows startup registry."
+        elif action in ["startup_status", "check_startup", "is_startup_enabled"]:
+            from core.startup import is_startup_enabled
+            enabled = is_startup_enabled()
+            if enabled:
+                return True, "Jarvis is currently configured to start automatically with Windows in minimized standby."
+            return True, "Automatic Windows startup is currently disabled for Jarvis."
+        elif action in ["enter_standby", "standby"]:
+            return True, "Entering standby mode, Sir. Say 'Hey Jarvis' or press Talk to activate me."
+        elif action in ["disable_listening", "mute_mic", "stop_listening"]:
+            return True, "Microphone muted. Hands-free listening disabled. Use the talk button to resume."
+        elif action in ["enable_listening", "unmute_mic", "resume_listening"]:
+            return True, "Microphone active. Hands-free listening resumed."
         else:
             return False, f"Unknown system control action: {action}"
+
 
     def _handle_browser_control(self, action: str, target: str, intent_node: dict) -> (bool, str):
         tab_target = intent_node.get("tab_target") or target or ""

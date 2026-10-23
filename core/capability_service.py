@@ -145,7 +145,9 @@ class CapabilityService:
             "system": "System Controls",
             "developer": "Developer Workflow",
             "content": "Content & Reasoning",
-            "media": "Media & Playback"
+            "media": "Media & Playback",
+            "social": "Social & Humor",
+            "personality": "Personality & Tone"
         }
 
         active_categories = [cat_map[c] for c in categories if c in cat_map]
@@ -158,7 +160,7 @@ class CapabilityService:
             f"• Core Capabilities: {overview_items}.\n"
             f"• Applications: Over {breakdown['discovered_apps_count']} local applications recognized.\n"
             f"• Custom Commands: {len(breakdown['enabled_custom_commands'])} active workflows.\n\n"
-            f"Say 'show all commands' for full reference, or 'show browser commands' for specific areas."
+            f"Say 'show all commands' for full reference, 'what can you do offline' for offline features, or ask about specific categories."
         )
         return text
 
@@ -181,6 +183,8 @@ class CapabilityService:
             ("developer", "Developer & Project Workflow"),
             ("content", "AI & Content Generation"),
             ("media", "Media & Video Playback"),
+            ("social", "Social Intelligence & Humor"),
+            ("personality", "Personality & Tone Settings"),
         ]
 
         examples_map = {
@@ -192,6 +196,8 @@ class CapabilityService:
             "developer": ["'run tests'", "'check git status'", "'switch to Jarvis project'"],
             "content": ["'explain this python error'", "'write a professional email about project update'", "'summarize page'"],
             "media": ["'pause music'", "'next track'", "'toggle playback'"],
+            "social": ["'tell me a programming joke'", "'tell me a fun fact'", "'roast me'", "'who built you'", "'who are you'"],
+            "personality": ["'be more funny'", "'be professional'", "'talk casually'", "'keep it short'", "'be dramatic'"],
         }
 
         sections = ["JARVIS Comprehensive Command Reference:"]
@@ -238,9 +244,20 @@ class CapabilityService:
             "writing": "content",
             "media": "media",
             "custom": "custom",
+            "social": "social",
+            "humor": "social",
+            "jokes": "social",
+            "personality": "personality",
+            "tone": "personality",
         }
 
         target_cat = scope_alias_map.get(scope_clean, scope_clean)
+
+        if target_cat in ["offline", "offline_work"]:
+            return self.get_offline_capabilities()
+
+        if target_cat in ["unavailable", "missing"]:
+            return self.get_unavailable_capabilities()
 
         if target_cat == "custom":
             if self.custom_command_registry:
@@ -254,7 +271,7 @@ class CapabilityService:
         tools = [t for t in breakdown["available_tools"] if t.category.lower() == target_cat]
 
         if not tools:
-            return f"I couldn't find specific commands registered under '{scope}'. Try asking for browser, files, applications, or system commands."
+            return f"I couldn't find specific commands registered under '{scope}'. Try asking for browser, files, applications, system, social, or personality commands."
 
         tool_descs = [f"• {t.name}: {t.description}" for t in tools[:6]]
         desc_block = "\n".join(tool_descs)
@@ -267,11 +284,55 @@ class CapabilityService:
             "search": "Search Capabilities",
             "developer": "Developer Workflows",
             "content": "Content & AI Generation",
-            "media": "Media Playback Controls"
+            "media": "Media Playback Controls",
+            "social": "Social Intelligence & Humor",
+            "personality": "Personality & Tone Settings"
         }
         disp_title = cat_names.get(target_cat, target_cat.title())
 
         return f"Here are the supported {disp_title} commands, Sir:\n{desc_block}"
+
+    def get_offline_capabilities(self) -> str:
+        """Truthfully explains which features work offline without an internet connection or cloud API key."""
+        return (
+            "Here is what I can do completely offline without internet or cloud APIs, Sir:\n"
+            "• Application Control: Launch, minimize, maximize, and close local desktop apps.\n"
+            "• System Controls: Adjust or mute volume, lock computer, take screenshots, and inspect system telemetry.\n"
+            "• Files & Folders: Open local folders (Downloads, Documents, Desktop) and manage files.\n"
+            "• Voice & Perception: Local wake-word detection, microphone input, and local speech synthesis.\n"
+            "• Social & Personality: Jokes, fun facts, roasts, greetings, and personality tone switching.\n\n"
+            "Only web searches (Google/YouTube) and external cloud LLM reasoning require an active internet connection."
+        )
+
+    def get_unavailable_capabilities(self) -> str:
+        """Explains features that are currently disabled, unsupported, or missing configuration."""
+        breakdown = self.get_capabilities_breakdown()
+        unsupported = breakdown.get("unsupported_tools", [])
+        configured_provs = breakdown.get("configured_providers", [])
+
+        lines = ["Currently unavailable or unconfigured features:"]
+        if not configured_provs:
+            lines.append("• Cloud AI Providers: No cloud AI keys (OpenAI, Gemini, OpenRouter) configured; operating in local-first mode.")
+        if unsupported:
+            unsupp_names = ", ".join(t.name for t in unsupported[:5])
+            lines.append(f"• System-restricted tools: {unsupp_names} (not supported on current OS).")
+
+        return "\n".join(lines)
+
+    def explain_capability(self, query: str) -> str:
+        """Provides an honest, truthful explanation for specific capability queries."""
+        q = query.lower()
+        if "youtube" in q:
+            return "Yes, I can search YouTube directly. Say 'search YouTube for Python tutorials' or 'find lofi music on YouTube', and I will open the results in your browser."
+        if "application" in q or "apps" in q or "open chrome" in q:
+            return "Yes, I can discover and launch desktop applications installed on your computer, including Chrome, VS Code, Spotify, and system tools."
+        if "control my computer" in q or "control this pc" in q or "system" in q:
+            return "Yes, I can adjust system volume, mute audio, take screenshots, lock your computer, and manage active application windows."
+        if "search the web" in q or "search google" in q:
+            return "Yes, I can perform web searches using Google or targeted sites like YouTube, GitHub, and Stack Overflow."
+        if "offline" in q:
+            return self.get_offline_capabilities()
+        return self.get_help_overview()
 
 
 # Global Singleton Instance
