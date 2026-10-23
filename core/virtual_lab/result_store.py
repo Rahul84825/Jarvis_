@@ -3,6 +3,7 @@
 import os
 import sqlite3
 import logging
+import contextlib
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 
@@ -21,10 +22,15 @@ class TestResultStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _get_connection(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def _get_connection(self):
         conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_db(self):
         try:
