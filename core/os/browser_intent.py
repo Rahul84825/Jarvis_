@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Dict, Any, List, Tuple
 import logging
+from core.os.domain_manager import domain_manager
 
 logger = logging.getLogger("Jarvis.BrowserIntent")
 
@@ -183,8 +184,15 @@ class BrowserIntentParser:
             return match.group(0)
 
         cleaned = self.SPOKEN_DOT_PATTERN.sub(_dot_replacer, text)
-        # Collapse spaces around dots: 'hianime . at' -> 'hianime.at'
-        cleaned = re.sub(r'([a-zA-Z0-9_\-]+)\s*\.\s*([a-zA-Z0-9_\-]+)', r'\1.\2', cleaned)
+        # Collapse spaces around dots: 'hianime . at' -> 'hianime.at' (avoid collapsing after command verbs like 'open')
+        def _dot_collapse(m: re.Match) -> str:
+            left = m.group(1)
+            right = m.group(2)
+            if left.lower() in ["open", "launch", "navigate", "to", "go", "visit", "browse", "search", "find", "and"]:
+                return m.group(0)
+            return f"{left}.{right}"
+
+        cleaned = re.sub(r'([a-zA-Z0-9_\-]+)\s*\.\s*([a-zA-Z0-9_\-]+)', _dot_collapse, cleaned)
         return cleaned
 
     def extract_browser_target(self, text: str) -> Tuple[str, str, bool]:
@@ -197,10 +205,16 @@ class BrowserIntentParser:
             remaining = re.sub(r"\s+", " ", remaining).strip()
             return browser, remaining, True
 
+        # Prefix browser pattern: "open chrome and go to...", "launch edge and open..."
+        b_prefix_match = re.match(r"^(?:open|launch|start|focus)\s+(chrome|chromium|edge|firefox|brave|opera)\s+(?:and\s+)?(?:go\s+to|navigate\s+to|open|search)\s+(.+)$", text, re.IGNORECASE)
+        if b_prefix_match:
+            browser = b_prefix_match.group(1).lower()
+            remainder = b_prefix_match.group(2).strip()
+            return browser, remainder, True
+
         # Trailing browser without preposition: "... chrome"
         b_end_match = re.search(r"\b(chrome|chromium|edge|firefox|brave|opera)\s*$", text, re.IGNORECASE)
         if b_end_match and len(text.strip().split()) > 1:
-            # Check if this isn't the only word or command
             prefix = text[:b_end_match.start()].strip()
             if prefix.lower() not in ["open", "launch", "start", "focus"]:
                 browser = b_end_match.group(1).lower()
@@ -366,8 +380,8 @@ class BrowserIntentParser:
                 normalized_text=norm_text
             )
 
-        # "Search the current page instead" or "search this page for X"
-        page_search_match = re.match(r"^(?:search\s+(?:the\s+)?current\s+page(?:\s+for\s+(.+))?|search\s+this\s+page\s+for\s+(.+))$", clean, re.IGNORECASE)
+        # In-page search (Find in Page) e.g. "search this page for X", "search current page for X"
+        page_search_match = re.match(r"^(?:search\s+(?:the\s+)?current\s+(?:page|tab)(?:\s+for\s+(.+))?|search\s+(?:this|the)\s+(?:page|tab)\s+for\s+(.+))$", clean, re.IGNORECASE)
         if page_search_match:
             q = page_search_match.group(1) or page_search_match.group(2) or ""
             return BrowserIntent(
@@ -379,6 +393,39 @@ class BrowserIntentParser:
                 raw_text=raw_text,
                 normalized_text=norm_text
             )
+
+        # Website search on active/current site: "search this website for X", "search current website for X"
+        site_search_match = re.match(r"^(?:search\s+(?:the\s+)?current\s+(?:website|site)(?:\s+for\s+(.+))?|search\s+(?:this|the)\s+(?:website|site)\s+for\s+(.+)|search\s+for\s+(.+?)\s+on\s+(?:this\s+website|the\s+current\s+website|current\s+website|this\s+site))$", clean, re.IGNORECASE)
+        if site_search_match:
+            q = (site_search_match.group(1) or site_search_match.group(2) or site_search_match.group(3) or "").strip().lower()
+            active_site = session_context.get("active_site") or session_context.get("last_site")
+            active_url = session_context.get("active_url") or session_context.get("last_url")
+            if active_site or active_url:
+                return BrowserIntent(
+                    action_type=BrowserActionType.SEARCH_WEBSITE,
+                    target_browser=browser_name,
+                    url=active_url,
+                    site_name=active_site or "current_website",
+                    domain=urllib.parse.urlparse(active_url).netloc if active_url else None,
+                    search_query=q.strip(),
+                    search_scope=SearchScope.WEBSITE,
+                    tab_preference=tab_pref,
+                    input_purpose="search_box",
+                    submit=True,
+                    verification_method="search_results",
+                    raw_text=raw_text,
+                    normalized_text=norm_text,
+                    metadata={"contextual_reuse": True}
+                )
+            else:
+                return BrowserIntent(
+                    action_type=BrowserActionType.CLARIFICATION_NEEDED,
+                    target_browser=browser_name,
+                    search_query=q.strip(),
+                    clarification_prompt=f"Which website would you like me to search for '{q.strip()}'?",
+                    raw_text=raw_text,
+                    normalized_text=norm_text
+                )
 
         # -------------------------------------------------------------
         # E. AI PROMPT INTERACTION (e.g. "open ChatGPT and ask it to explain binary search")
@@ -465,31 +512,113 @@ class BrowserIntentParser:
 
         # -------------------------------------------------------------
         # G. EXPLICIT URL / DOMAIN NAVIGATION
-        # e.g. "open hianime.at on chrome", "navigate to https://hianime.to", "open google.com"
+        # e.g. "open hianime.at on chrome", "navigate to https://hianime.to", "open google.com",
+        # "search hianime.at", "search for hianime.at", "visit hianime.at", "hianime.at"
         # -------------------------------------------------------------
-        open_site_match = re.match(r"^(?:open|launch|navigate\s+to|go\s+to)\s+(.+)$", clean, re.IGNORECASE)
+        domain_direct_match = re.match(r"^(?:open|launch|navigate\s+to|go\s+to|visit|browse\s+to|search(?:\s+for)?\s+)?([a-zA-Z0-9_\-\.]+\.[a-zA-Z]{2,10}|https?://\S+)$", clean, re.IGNORECASE)
+        if domain_direct_match:
+            candidate_target = domain_direct_match.group(1).strip()
+            candidate_target = re.sub(r"[\.\,\?\!\;:]+$", "", candidate_target).strip()
+            d_res = domain_manager.resolve_domain(candidate_target, confidence=1.0)
+            if d_res.status == "CONFIRMATION_REQUIRED":
+                return BrowserIntent(
+                    action_type=BrowserActionType.CLARIFICATION_NEEDED,
+                    target_browser=browser_name,
+                    site_name=d_res.site_name or candidate_target,
+                    clarification_prompt=d_res.clarification_prompt,
+                    confidence=d_res.confidence,
+                    raw_text=raw_text,
+                    normalized_text=norm_text,
+                    metadata={
+                        "domain_confirmation": True,
+                        "canonical_domain": d_res.canonical_hostname,
+                        "candidate_domain": d_res.hostname,
+                        "options": [d_res.canonical_hostname, d_res.hostname]
+                    }
+                )
+            elif d_res.status == "INVALID":
+                return BrowserIntent(
+                    action_type=BrowserActionType.CLARIFICATION_NEEDED,
+                    target_browser=browser_name,
+                    clarification_prompt=d_res.clarification_prompt,
+                    confidence=0.5,
+                    raw_text=raw_text,
+                    normalized_text=norm_text,
+                    metadata={"invalid_domain": True, "reason": d_res.error_reason}
+                )
+            elif d_res.is_navigable:
+                ok, resolved_url, err = domain_manager.construct_validated_url(d_res.hostname)
+                if ok:
+                    domain = urllib.parse.urlsplit(resolved_url).netloc
+                    logger.info(f"[DOMAIN_TRACE][INTENT] action=OPEN_URL, target_hostname='{d_res.hostname}', url='{resolved_url}'")
+                    return BrowserIntent(
+                        action_type=BrowserActionType.OPEN_URL,
+                        target_browser=browser_name,
+                        url=resolved_url,
+                        site_name=d_res.hostname,
+                        domain=domain,
+                        search_scope=SearchScope.WEBSITE,
+                        tab_preference=tab_pref,
+                        submit=False,
+                        verification_method="cdp_or_title",
+                        raw_text=raw_text,
+                        normalized_text=norm_text
+                    )
+
+        open_site_match = re.match(r"^(?:open|launch|navigate\s+to|go\s+to|visit|browse\s+to)\s+(.+)$", clean, re.IGNORECASE)
         if open_site_match:
             candidate_target = open_site_match.group(1).strip()
             # Remove leading "the website" or "site"
             candidate_target = re.sub(r"^(?:the\s+website\s+|website\s+|site\s+)", "", candidate_target).strip()
+            candidate_target = re.sub(r"[\.\,\?\!\;:]+$", "", candidate_target).strip()
 
-            # Check if it is an explicit URL or domain
-            if self.is_explicit_url_or_domain(candidate_target):
-                resolved_url = self.normalize_url(candidate_target)
-                domain = urllib.parse.urlparse(resolved_url).netloc
-                return BrowserIntent(
-                    action_type=BrowserActionType.OPEN_URL,
-                    target_browser=browser_name,
-                    url=resolved_url,
-                    site_name=candidate_target,
-                    domain=domain,
-                    search_scope=SearchScope.WEBSITE,
-                    tab_preference=tab_pref,
-                    submit=False,
-                    verification_method="cdp_or_title",
-                    raw_text=raw_text,
-                    normalized_text=norm_text
-                )
+            # Check if candidate looks like a domain attempt or full URL
+            if ("." in candidate_target or candidate_target.startswith("http://") or candidate_target.startswith("https://")) and " " not in candidate_target:
+                d_res = domain_manager.resolve_domain(candidate_target, confidence=1.0)
+                if d_res.status == "CONFIRMATION_REQUIRED":
+                    return BrowserIntent(
+                        action_type=BrowserActionType.CLARIFICATION_NEEDED,
+                        target_browser=browser_name,
+                        site_name=d_res.site_name or candidate_target,
+                        clarification_prompt=d_res.clarification_prompt,
+                        confidence=d_res.confidence,
+                        raw_text=raw_text,
+                        normalized_text=norm_text,
+                        metadata={
+                            "domain_confirmation": True,
+                            "canonical_domain": d_res.canonical_hostname,
+                            "candidate_domain": d_res.hostname,
+                            "options": [d_res.canonical_hostname, d_res.hostname]
+                        }
+                    )
+                elif d_res.status == "INVALID":
+                    return BrowserIntent(
+                        action_type=BrowserActionType.CLARIFICATION_NEEDED,
+                        target_browser=browser_name,
+                        clarification_prompt=d_res.clarification_prompt,
+                        confidence=0.5,
+                        raw_text=raw_text,
+                        normalized_text=norm_text,
+                        metadata={"invalid_domain": True, "reason": d_res.error_reason}
+                    )
+                elif d_res.is_navigable:
+                    ok, resolved_url, err = domain_manager.construct_validated_url(d_res.hostname)
+                    if ok:
+                        domain = urllib.parse.urlsplit(resolved_url).netloc
+                        logger.info(f"[DOMAIN_TRACE][INTENT] action=OPEN_URL, target_hostname='{d_res.hostname}', url='{resolved_url}'")
+                        return BrowserIntent(
+                            action_type=BrowserActionType.OPEN_URL,
+                            target_browser=browser_name,
+                            url=resolved_url,
+                            site_name=d_res.hostname,
+                            domain=domain,
+                            search_scope=SearchScope.WEBSITE,
+                            tab_preference=tab_pref,
+                            submit=False,
+                            verification_method="cdp_or_title",
+                            raw_text=raw_text,
+                            normalized_text=norm_text
+                        )
 
             # Check if it's a known popular site name without TLD (e.g. "open youtube")
             if candidate_target in self.POPULAR_SITES:
@@ -529,7 +658,7 @@ class BrowserIntentParser:
         # Pattern 1: "search for <QUERY> on <WEBSITE>" or "find <QUERY> on <WEBSITE>"
         search_on_match = re.match(r"^(?:search(?:\s+for)?|find)\s+(.+?)\s+(?:on|in|using)\s+([a-zA-Z0-9_\-\.\s]+)$", clean, re.IGNORECASE)
         if search_on_match:
-            query_part = search_on_match.group(1).strip()
+            query_part = search_on_match.group(1).strip().lower()
             site_part = search_on_match.group(2).strip()
 
             # Filter out non-website targets (e.g. "the web", "google search", in-app/desktop targets)
@@ -560,12 +689,13 @@ class BrowserIntentParser:
         search_site_for_match = re.match(r"^(?:search|find)\s+([a-zA-Z0-9_\-\.]+)\s+for\s+(.+)$", clean, re.IGNORECASE)
         if search_site_for_match:
             site_part = search_site_for_match.group(1).strip()
-            query_part = search_site_for_match.group(2).strip()
+            query_part = search_site_for_match.group(2).strip().lower()
 
-            if site_part.lower() in ["chrome", "chromium", "edge", "firefox", "brave", "opera"]:
+            if site_part.lower() in ["google", "chrome", "chromium", "edge", "firefox", "brave", "opera"]:
+                b_dest = site_part.lower() if site_part.lower() != "google" else browser_name
                 return BrowserIntent(
                     action_type=BrowserActionType.SEARCH_WEB,
-                    target_browser=site_part.lower(),
+                    target_browser=b_dest,
                     url=f"https://www.google.com/search?q={urllib.parse.quote_plus(query_part)}",
                     site_name="google",
                     domain="www.google.com",
@@ -632,9 +762,15 @@ class BrowserIntentParser:
         # "Search for X" without explicit destination: ambiguous destination
         bare_search_for_match = re.match(r"^search\s+for\s+(.+)$", clean, re.IGNORECASE)
         if bare_search_for_match:
-            q = bare_search_for_match.group(1).strip()
-            active_site = session_context.get("active_site")
-            active_url = session_context.get("active_url")
+            q = bare_search_for_match.group(1).strip().lower()
+            # Clean deictic references like "there", "on it", "in it" (e.g. "search for Naruto there")
+            if re.search(r"\bthere\b", q, re.IGNORECASE) or re.search(r"\b(?:on|in)\s+it\b", q, re.IGNORECASE):
+                q = re.sub(r"\bthere\b", "", q, flags=re.IGNORECASE).strip()
+                q = re.sub(r"\b(?:on|in)\s+it\b", "", q, flags=re.IGNORECASE).strip()
+                q = re.sub(r"\s+", " ", q).strip()
+
+            active_site = session_context.get("active_site") or session_context.get("last_site")
+            active_url = session_context.get("active_url") or session_context.get("last_url")
 
             # Destination cannot be determined from explicit wording or reliable context -> ask clarification!
             if not active_site and not active_url:

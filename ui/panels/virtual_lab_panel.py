@@ -68,9 +68,9 @@ class VirtualLabWorker(QThread):
             elif self.action == "run_category" and self.category:
                 results, md, j = self.controller.run_category(self.category, mode=self.mode, on_progress=on_progress)
             elif self.action == "re_run_failed":
-                results, md, j = self.controller.re_run_failed(mode=self.mode, on_progress=on_progress)
+                results, md, j = self.controller.run_failed_scenarios(mode=self.mode, on_progress=on_progress)
             elif self.action == "stress":
-                stress_res = self.controller.run_stress_test(concurrency=4, total_requests=8)
+                stress_res = self.controller.run_stress_test(concurrency=4, count=8)
                 md = f"# STRESS TEST RUN COMPLETE\n\n```json\n{json.dumps(stress_res, indent=2)}\n```"
                 j = {"stress_results": stress_res}
                 results = []

@@ -218,7 +218,8 @@ class IntelligenceRouter:
             "identity", "repeat_response", "status_request", "acknowledgement",
             "affirmation", "negation", "how_are_you", "status_check",
             "turn_on_camera", "turn_off_camera", "start_hand_tracking", "stop_hand_tracking", "camera_snapshot",
-            "social_humor", "social_personality", "social_chat", "social_greeting", "about"
+            "social_humor", "social_personality", "social_chat", "social_greeting", "about",
+            "spotify_control", "panel_visibility"
         }
 
 
@@ -260,12 +261,15 @@ class IntelligenceRouter:
         """Determines if the request is an informational question rather than an imperative command."""
         # Desktop Intelligence, Screen Understanding & File Creation/Search Bypass
         if (
-            re.search(r"^(?:explain|analyze|inspect|summarize)\s+(?:my\s+|this\s+|the\s+)?(?:screen|page|code|error|graph|pdf|point|section)\b", clean, re.IGNORECASE) or
+            re.search(r"^(?:explain|analyze|inspect|summarize)\s+(?:my\s+|this\s+|the\s+|current\s+)?(?:screen|page|website|tab|code|error|graph|pdf|point|section)\b", clean, re.IGNORECASE) or
+            re.search(r"^(?:explain|describe|tell\s+me)\s+(?:what\s+is\s+on|what's\s+on)\s+(?:my\s+|this\s+|the\s+)?(?:screen|page)\b", clean, re.IGNORECASE) or
+            re.search(r"^what\s+(?:is|'s)\s+on\s+(?:this|my|the)\s+screen\b", clean, re.IGNORECASE) or
             re.search(r"^(?:where\s+did\s+i\s+save|where\s+is\s+my\s+.*(?:program|file|code|repository|project|folder|readme)|find\s+(?:the\s+)?.*(?:created|saved|written))\b", clean, re.IGNORECASE) or
-            re.search(r"^(?:what\s+are\s+the\s+important\s+points|what\s+does\s+this\s+error\s+mean|what\s+is\s+this\s+button\s+used\s+for|what\s+is\s+on\s+my\s+screen|compare\s+these\s+two)\b", clean, re.IGNORECASE) or
-            clean.startswith("explain point ") or clean.startswith("explain the ") or clean.startswith("i still don't understand") or
+            re.search(r"^(?:what\s+are\s+the\s+important\s+points|what\s+does\s+this\s+error\s+mean|what\s+does\s+that\s+error\s+mean|what\s+is\s+this\s+button\s+used\s+for|what\s+is\s+on\s+my\s+screen|what\s+is\s+on\s+this\s+screen|compare\s+these\s+two)\b", clean, re.IGNORECASE) or
+            clean.startswith("explain point ") or clean.startswith("explain the ") or clean.startswith("explain code ") or clean.startswith("explain the code ") or clean.startswith("i still don't understand") or
             "short answer first" in clean or "like i'm a beginner" in clean or
-            clean.startswith("create a ") or clean.startswith("write a ") or clean.startswith("generate a ") or clean.startswith("save this explanation") or
+            clean.startswith("create a ") or clean.startswith("write a ") or clean.startswith("generate a ") or clean.startswith("save this explanation") or clean.startswith("save it in ") or
+            clean.startswith("search this website") or clean.startswith("search the website") or
             "ai provider" in clean or "ai providers" in clean or "list ai" in clean or
             "cache stat" in clean or "caching save" in clean or "clear cache" in clean or ("forget" in clean and "cache" in clean)
         ):
@@ -286,6 +290,15 @@ class IntelligenceRouter:
             "tell me what time", "tell me the time", "current time", "what time do you have",
             "time now", "today's date", "todays date", "today s date", "today date",
             "what date is", "tell me the date", "what is today"
+        ]):
+            return False
+
+        # Spotify inquiry bypass
+        if any(h in clean for h in [
+            "which song is playing", "what song is playing", "what's playing",
+            "whats playing", "what is playing", "what is currently playing",
+            "what playlists do i have", "what are my playlists", "show my playlists",
+            "show playlists", "list my playlists", "list playlists", "spotify"
         ]):
             return False
 

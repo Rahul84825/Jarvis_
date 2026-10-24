@@ -174,6 +174,65 @@ class TestVirtualLab(unittest.TestCase):
         self.assertEqual(panel.combo_cat.count(), 11)
         self.assertTrue(panel.btn_run_all.isEnabled())
 
+    def test_scenario_APP_002(self):
+        """Verify APP-002: Open Notepad launches Notepad and sets focus."""
+        scenario = ScenarioLibrary.get_by_id("APP-002")
+        runner = CommandTestRunner(mode=ExecutionMode.SIMULATION)
+        res = runner.run_scenario(scenario)
+        self.assertEqual(res.status, TestStatus.PASSED, res.failure_reason)
+
+    def test_scenario_NAV_001(self):
+        """Verify NAV-001: Open example.com in Chrome navigates active browser URL."""
+        scenario = ScenarioLibrary.get_by_id("NAV-001")
+        runner = CommandTestRunner(mode=ExecutionMode.SIMULATION)
+        res = runner.run_scenario(scenario)
+        self.assertEqual(res.status, TestStatus.PASSED, res.failure_reason)
+
+    def test_scenario_NAV_002(self):
+        """Verify NAV-002: Search YouTube for Valorant highlights executes video search."""
+        scenario = ScenarioLibrary.get_by_id("NAV-002")
+        runner = CommandTestRunner(mode=ExecutionMode.SIMULATION)
+        res = runner.run_scenario(scenario)
+        self.assertEqual(res.status, TestStatus.PASSED, res.failure_reason)
+
+    def test_scenario_NAV_003(self):
+        """Verify NAV-003: Search for Naruto on HiAnime extracts site and query."""
+        scenario = ScenarioLibrary.get_by_id("NAV-003")
+        runner = CommandTestRunner(mode=ExecutionMode.SIMULATION)
+        res = runner.run_scenario(scenario)
+        self.assertEqual(res.status, TestStatus.PASSED, res.failure_reason)
+
+    def test_scenario_NAV_004(self):
+        """Verify NAV-004: Search Google for python decorators preserves web search."""
+        scenario = ScenarioLibrary.get_by_id("NAV-004")
+        runner = CommandTestRunner(mode=ExecutionMode.SIMULATION)
+        res = runner.run_scenario(scenario)
+        self.assertEqual(res.status, TestStatus.PASSED, res.failure_reason)
+
+    def test_scenario_FIL_001(self):
+        """Verify FIL-001: Create a Python file on the Desktop called test.py creates file."""
+        scenario = ScenarioLibrary.get_by_id("FIL-001")
+        runner = CommandTestRunner(mode=ExecutionMode.SIMULATION)
+        res = runner.run_scenario(scenario)
+        self.assertEqual(res.status, TestStatus.PASSED, res.failure_reason)
+
+
+# Bind test_scenario_<ID> methods dynamically for all 35 library scenarios
+# to enable python -m unittest tests.test_virtual_lab -k <SCENARIO_ID>
+for _sc in ScenarioLibrary.get_all_scenarios():
+    _sid_clean = _sc.scenario_id.replace("-", "_")
+    _m_name = f"test_scenario_{_sid_clean}"
+    if not hasattr(TestVirtualLab, _m_name):
+        def _make_scenario_test(target_id):
+            def _test_method(self):
+                sc = ScenarioLibrary.get_by_id(target_id)
+                self.assertIsNotNone(sc, f"Scenario '{target_id}' not found in library.")
+                runner = CommandTestRunner(mode=ExecutionMode.SIMULATION)
+                res = runner.run_scenario(sc)
+                self.assertEqual(res.status, TestStatus.PASSED, res.failure_reason)
+            return _test_method
+        setattr(TestVirtualLab, _m_name, _make_scenario_test(_sc.scenario_id))
+
 
 if __name__ == "__main__":
     unittest.main()

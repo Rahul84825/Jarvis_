@@ -32,6 +32,184 @@ class ExplanationState:
         return self.current_sentence_idx
 
 @dataclass
+class PendingActionContext:
+    """Represents a pending action awaiting user clarification or confirmation."""
+    original_request: str = ""
+    intent: str = ""
+    action: str = ""
+    target: str = ""
+    target_url: Optional[str] = None
+    target_domain: Optional[str] = None
+    browser: Optional[str] = "chrome"
+    search_query: str = ""
+    clarification_question: str = ""
+    clarification_type: str = "generic"  # "browser_selection", "destination_selection", "website_navigation", "confirmation"
+    valid_options: List[str] = field(default_factory=list)
+    turn_index: int = 0
+    created_at: float = field(default_factory=time.time)
+    timeout_seconds: float = 60.0
+    is_cancelled: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def is_expired(self, current_time: Optional[float] = None) -> bool:
+        now = current_time if current_time is not None else time.time()
+        return (now - self.created_at) > self.timeout_seconds
+
+    def can_resolve(self, text: str) -> bool:
+        """Determines if user response is an answer or follow-up to this pending clarification."""
+        if not text:
+            return False
+        clean = text.lower().strip()
+        clean = re.sub(r"[\.\?\!\,\;]+$", "", clean).strip()
+
+        # Cancellation phrases
+        cancel_phrases = ["cancel", "cancel that", "stop", "nevermind", "abort", "no don't", "don't do that", "leave it"]
+        if clean in cancel_phrases or any(clean == p for p in cancel_phrases):
+            return True
+
+        # Affirmation phrases
+        yes_phrases = ["yes", "sure", "ok", "okay", "go ahead", "do it", "yep", "yeah", "open it", "open it there", "that one", "please"]
+        if clean in yes_phrases:
+            return True
+
+        # Browser selection
+        browsers = ["chrome", "google chrome", "edge", "microsoft edge", "brave", "firefox", "opera", "browser", "current browser", "default browser"]
+        if clean in browsers or any(b in clean for b in ["use chrome", "in chrome", "with chrome", "open in chrome", "use edge", "use brave", "use firefox"]):
+            return True
+
+        # Destination override: "No, YouTube instead", "YouTube instead", "use Google instead", "search YouTube instead"
+        if re.search(r"\b(?:instead|rather)\b", clean) or clean.startswith("no, ") or clean.startswith("no "):
+            return True
+
+        # Contextual site reuse: "use the same website", "the same site", "same website"
+        if any(p in clean for p in ["same website", "same site", "the same website", "the same site"]):
+            return True
+
+        # If options are explicitly configured in valid_options
+        if self.valid_options and any(opt.lower() in clean for opt in self.valid_options):
+            return True
+
+        return False
+
+    def resolve_action(self, text: str) -> Dict[str, Any]:
+        """Merges user follow-up response into original intent and returns executable intent node or cancellation."""
+        clean = text.lower().strip()
+        clean = re.sub(r"[\.\?\!\,\;]+$", "", clean).strip()
+
+        # 1. Cancellation
+        cancel_phrases = ["cancel", "cancel that", "stop", "nevermind", "abort", "no don't", "don't do that", "leave it"]
+        if clean in cancel_phrases:
+            self.is_cancelled = True
+            return {
+                "action": "cancel",
+                "cancelled": True,
+                "message": "Action cancelled, Sir."
+            }
+
+        # 2. Destination Override (e.g. "No, YouTube instead", "YouTube instead", "use Google instead")
+        override_match = re.search(r"(?:use\s+|on\s+|search\s+|open\s+)?([a-zA-Z0-9_\-\.]+)\s+(?:instead|rather)", clean)
+        if not override_match and (clean.startswith("no, ") or clean.startswith("no ")):
+            rem = re.sub(r"^no[, ]+", "", clean).strip()
+            override_match = re.search(r"(?:use\s+|on\s+|search\s+|open\s+)?([a-zA-Z0-9_\-\.]+)", rem)
+
+        if override_match:
+            new_target = override_match.group(1).strip().lower()
+            if new_target in ["youtube", "google", "github", "reddit", "wikipedia"]:
+                if self.search_query:
+                    return {
+                        "intent": "web_search",
+                        "action": "search",
+                        "action_type": "search_website" if new_target != "google" else "search_web",
+                        "provider": new_target,
+                        "site_name": new_target,
+                        "browser": self.browser or "chrome",
+                        "target": self.search_query,
+                        "query": self.search_query,
+                        "raw_text": text
+                    }
+                else:
+                    from core.os.browser_intent import BrowserIntentParser
+                    parser = BrowserIntentParser()
+                    new_url, domain = parser._resolve_site_destination(new_target)
+                    return {
+                        "intent": "browser_action",
+                        "action": "open_url",
+                        "action_type": "open_url",
+                        "browser": self.browser or "chrome",
+                        "target_browser": self.browser or "chrome",
+                        "target": new_target,
+                        "site_name": new_target,
+                        "url": new_url,
+                        "domain": domain,
+                        "raw_text": text
+                    }
+
+        # 3. Browser selection (e.g. "Chrome", "Use Chrome", "in Edge", "Brave")
+        selected_browser = self.browser or "chrome"
+        for b in ["chrome", "edge", "brave", "firefox", "opera"]:
+            if b in clean:
+                selected_browser = b
+                break
+
+        # 4. Merging with original action
+        if self.action in ["open_url", "open_website", "navigate"] or self.intent in ["open_website", "browser_action"]:
+            return {
+                "intent": "browser_action",
+                "action": "open_url",
+                "action_type": "open_url",
+                "browser": selected_browser,
+                "target_browser": selected_browser,
+                "target": self.target or self.target_domain,
+                "site_name": self.target or self.target_domain,
+                "url": self.target_url,
+                "domain": self.target_domain,
+                "search_query": self.search_query,
+                "query": self.search_query,
+                "raw_text": text,
+                "resolved_from_clarification": True
+            }
+
+        if self.action in ["search_website", "search"]:
+            return {
+                "intent": "browser_action",
+                "action": "search_website",
+                "action_type": "search_website",
+                "browser": selected_browser,
+                "target_browser": selected_browser,
+                "target": self.target,
+                "site_name": self.target,
+                "url": self.target_url,
+                "domain": self.target_domain,
+                "search_query": self.search_query,
+                "query": self.search_query,
+                "raw_text": text,
+                "resolved_from_clarification": True
+            }
+
+        if self.intent == "spotify_control":
+            res_node = dict(self.metadata) if self.metadata else {}
+            res_node.update({
+                "intent": "spotify_control",
+                "action": self.action,
+                "target": self.target,
+                "confirmed": True,
+                "raw_text": text,
+                "resolved_from_clarification": True
+            })
+            return res_node
+
+        return {
+            "intent": self.intent or "browser_action",
+            "action": self.action or "open_url",
+            "browser": selected_browser,
+            "target": self.target,
+            "url": self.target_url,
+            "search_query": self.search_query,
+            "raw_text": text,
+            "resolved_from_clarification": True
+        }
+
+@dataclass
 class ConversationTaskContext:
     """Maintains active task context, entity states, and conversational continuity."""
     active_task_id: Optional[str] = None
@@ -68,6 +246,7 @@ class ConversationManager:
         self.last_action: str = ""
         self.active_project: str = "jarvis"
         self.pending_clarification: Optional[str] = None
+        self.pending_action: Optional[PendingActionContext] = None
         self.current_topic: str = ""
         self.explanation_state: Optional[ExplanationState] = None
         self.task_context = ConversationTaskContext()
@@ -84,13 +263,40 @@ class ConversationManager:
             self.active_project = project
         self.last_interaction_timestamp = time.time()
 
+    def set_pending_action(self, pending: PendingActionContext):
+        """Sets the active pending action context awaiting user follow-up or clarification."""
+        self.pending_action = pending
+        self.pending_clarification = pending.clarification_question
+        self.last_interaction_timestamp = time.time()
+        logger.info(f"[CONVERSATION] Registered pending action: target='{pending.target}', intent='{pending.intent}', question='{pending.clarification_question}'")
+
+    def get_pending_action(self) -> Optional[PendingActionContext]:
+        """Returns active pending action if not expired or cancelled."""
+        if not self.pending_action:
+            return None
+        if self.pending_action.is_expired():
+            logger.info("[CONVERSATION] Active pending action has expired. Clearing.")
+            self.pending_action = None
+            self.pending_clarification = None
+            return None
+        return self.pending_action
+
+    def clear_pending_action(self):
+        """Clears active pending action."""
+        self.pending_action = None
+        self.pending_clarification = None
+
     def get_context(self) -> Dict[str, Any]:
         """Returns active contextual snapshot."""
+        pending = self.get_pending_action()
         return {
             "last_target": self.last_target,
             "last_action": self.last_action,
             "active_project": self.active_project,
             "pending_clarification": self.pending_clarification,
+            "has_pending_action": bool(pending),
+            "pending_action_target": pending.target if pending else None,
+            "pending_action_intent": pending.intent if pending else None,
             "current_topic": self.task_context.current_topic,
             "is_interrupted": self.task_context.is_interrupted,
             "active_task_id": self.task_context.active_task_id

@@ -10,26 +10,39 @@ class ReportGenerator:
     """Generates detailed Markdown and JSON diagnostic reports for Santra test runs."""
 
     @staticmethod
+    def _deduplicate_results(results: List[ScenarioResult]) -> List[ScenarioResult]:
+        """Deduplicates results by scenario_id, keeping the latest outcome for each unique scenario."""
+        deduped: Dict[str, ScenarioResult] = {}
+        for r in results:
+            deduped[r.scenario_id] = r
+        return list(deduped.values())
+
+    @classmethod
     def generate_markdown(
+        cls,
         run_id: str,
         results: List[ScenarioResult],
         duration_sec: float,
         mode: ExecutionMode = ExecutionMode.SIMULATION
     ) -> str:
-        """Constructs an engineering report in GitHub-flavored Markdown."""
-        total = len(results)
-        passed = sum(1 for r in results if r.status == TestStatus.PASSED)
-        failed = sum(1 for r in results if r.status == TestStatus.FAILED)
+        """Constructs an engineering report in GitHub-flavored Markdown with strictly reconciled totals."""
+        unique_results = cls._deduplicate_results(results)
+        total = len(unique_results)
+        passed = sum(1 for r in unique_results if r.status == TestStatus.PASSED)
+        failed = sum(1 for r in unique_results if r.status == TestStatus.FAILED)
+        skipped = sum(1 for r in unique_results if r.status == TestStatus.SKIPPED)
         pass_rate = (passed / total * 100) if total > 0 else 0.0
 
         # Category aggregation
         category_counts: Dict[str, Dict[str, int]] = {}
-        for r in results:
+        for r in unique_results:
             cat = r.scenario_id.split("-")[0]
-            cat_stat = category_counts.setdefault(cat, {"total": 0, "passed": 0, "failed": 0})
+            cat_stat = category_counts.setdefault(cat, {"total": 0, "passed": 0, "failed": 0, "skipped": 0})
             cat_stat["total"] += 1
             if r.status == TestStatus.PASSED:
                 cat_stat["passed"] += 1
+            elif r.status == TestStatus.SKIPPED:
+                cat_stat["skipped"] += 1
             else:
                 cat_stat["failed"] += 1
 
@@ -47,6 +60,8 @@ class ReportGenerator:
         md.append(f"| Total Scenarios Tested | {total} | Completed |")
         md.append(f"| Passed Scenarios | {passed} | {'✅ Optimal' if failed == 0 else '⚠️ Attention Needed'} |")
         md.append(f"| Failed Scenarios | {failed} | {'✅ None' if failed == 0 else '❌ Failures Detected'} |")
+        if skipped > 0:
+            md.append(f"| Skipped Scenarios | {skipped} | ℹ️ Skipped |")
         md.append(f"| Total Runtime | {duration_sec:.2f}s | Fast |")
         md.append(f"| Pass Rate | {pass_rate:.1f}% | {'✅ PASS' if pass_rate >= 90.0 else '⚠️ REVIEW'} |\n")
 
@@ -63,7 +78,7 @@ class ReportGenerator:
             md.append("## 3. Detailed Failure Analysis & Diagnostic Reproductions\n")
             md.append("| Scenario ID | Command | Failure Category | Root Cause & Reproduction |")
             md.append("| :--- | :--- | :--- | :--- |")
-            for r in results:
+            for r in unique_results:
                 if r.status == TestStatus.FAILED:
                     cat_val = r.failure_category.value if r.failure_category else "unknown"
                     reason = r.failure_reason or "Unspecified failure"
@@ -80,28 +95,32 @@ class ReportGenerator:
 
         return "\n".join(md)
 
-    @staticmethod
+    @classmethod
     def generate_json(
+        cls,
         run_id: str,
         results: List[ScenarioResult],
         duration_sec: float,
         mode: ExecutionMode = ExecutionMode.SIMULATION
     ) -> Dict[str, Any]:
-        """Constructs machine-readable JSON evaluation summary."""
-        total = len(results)
-        passed = sum(1 for r in results if r.status == TestStatus.PASSED)
-        failed = sum(1 for r in results if r.status == TestStatus.FAILED)
+        """Constructs machine-readable JSON evaluation summary with reconciled unique counts."""
+        unique_results = cls._deduplicate_results(results)
+        total = len(unique_results)
+        passed = sum(1 for r in unique_results if r.status == TestStatus.PASSED)
+        failed = sum(1 for r in unique_results if r.status == TestStatus.FAILED)
+        skipped = sum(1 for r in unique_results if r.status == TestStatus.SKIPPED)
 
         return {
             "run_id": run_id,
-            "mode": mode.value,
+            "mode": mode.value if hasattr(mode, "value") else str(mode),
             "timestamp": datetime.now().isoformat(),
             "duration_sec": round(duration_sec, 2),
             "summary": {
                 "total": total,
                 "passed": passed,
                 "failed": failed,
+                "skipped": skipped,
                 "pass_rate_pct": round((passed / total * 100) if total > 0 else 0.0, 2)
             },
-            "scenarios": [r.to_dict() for r in results]
+            "scenarios": [r.to_dict() for r in unique_results]
         }

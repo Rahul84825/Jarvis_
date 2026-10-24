@@ -68,6 +68,9 @@ class JarvisRuntime:
         self._state_lock = threading.Lock()
         self._active_utterance_id: Optional[str] = None
         self._last_manual_talk_time: float = 0.0
+        self._last_wakeword_time: float = 0.0
+        self._speech_end_lock = threading.Lock()
+        self._recent_wav_paths = []
 
         # Transaction & Deduplication Cache
         self._dedup_cache: Dict[str, float] = {}
@@ -84,6 +87,7 @@ class JarvisRuntime:
         self.on_audio_amplitude_cb: Optional[Callable[[float], None]] = None
         self.on_camera_state_cb: Optional[Callable] = None
         self.on_gesture_cb: Optional[Callable] = None
+        self.panel_visibility_cb: Optional[Callable[[str], None]] = None
 
         # Core Engines
         self.history_tracker = ExecutionHistory(limit=100)
@@ -145,13 +149,27 @@ class JarvisRuntime:
         self.camera_manager.on_state_change_cb = lambda event: self._trigger_cb(self.on_camera_state_cb, event)
         self.camera_manager.on_gesture_cb = lambda event: self._trigger_cb(self.on_gesture_cb, event)
 
+        # Wire Executor Panel Visibility callback
+        self.executor.panel_visibility_cb = self._on_panel_visibility
+
         # Share single coordinated microphone stream with wake word detector
         if hasattr(self.wakeword_detector, "feed_pcm_frame"):
             self.listener.add_audio_consumer(self.wakeword_detector.feed_pcm_frame)
 
+        # Allow wake word detector to share transcriber's Whisper model to prevent duplicate memory usage
+        if hasattr(self.wakeword_detector, "set_shared_model"):
+            self.wakeword_detector._get_shared_model_fn = lambda: getattr(self.transcriber, "_model", None)
+
     def start(self):
-        """Starts background loops (VAD listener, TTS worker, WakeWord detector, STT prewarm)."""
+        """Starts background loops (VAD listener, TTS worker, WakeWord detector, STT prewarm, Resource Monitor)."""
         logger.info("Starting background services...")
+        try:
+            from core.system_resource_manager import system_resource_manager
+            system_resource_manager.start()
+            system_resource_manager.set_profile("STANDBY")
+        except Exception as re:
+            logger.debug(f"Resource manager start error: {re}")
+
         self.transcriber.preload_in_background()
         self.tts_manager.start(
             on_start_speaking=self._on_speaker_started,
@@ -159,16 +177,69 @@ class JarvisRuntime:
             on_start_synthesizing=self._on_speaker_synthesizing,
             on_audio_amplitude=lambda amp: self._trigger_cb(self.on_audio_amplitude_cb, amp)
         )
-        self.listener.start(self._on_speech_start, self._on_speech_end)
-        self.wakeword_detector.start(self._on_wakeword)
+        try:
+            self.listener.start(self._on_speech_start, self._on_speech_end)
+        except Exception as mic_err:
+            logger.warning(f"Microphone listener startup warning: {mic_err}. System continuing in degraded mode.")
+
+        try:
+            self.wakeword_detector.start(self._on_wakeword)
+        except Exception as ww_err:
+            logger.warning(f"Wake-word detector startup warning: {ww_err}.")
+
         self.proactive_daemon.start(self._on_proactive_alert)
         self._update_status("STANDBY")
         logger.info("[JARVIS_ONLINE] Standing by for wake word...")
+
+    def get_startup_health(self) -> Dict[str, Any]:
+        """Provides internal health and readiness check for Santra's background services."""
+        mic_listening = getattr(self.listener, "is_listening", lambda: False)()
+        mic_name = getattr(self.listener, "active_input_device_name", "Unknown")
+        ww_listening = getattr(self.wakeword_detector, "is_listening", lambda: False)()
+        ww_avail = getattr(self.wakeword_detector, "is_available", lambda: False)()
+        ww_diag = getattr(self.wakeword_detector, "get_diagnostic", lambda: "Ready")()
+        tts_name = self.tts_manager.provider.get_name() if hasattr(self.tts_manager, "provider") else "Default TTS"
+        tools_count = len(self.brain.tool_registry.list_tools()) if (hasattr(self, "brain") and hasattr(self.brain, "tool_registry")) else 0
+
+        actionable_errors = []
+        if not mic_listening:
+            actionable_errors.append(f"Microphone listener is not active (device: {mic_name}). Check audio device connection.")
+        if not ww_listening and not self.muted:
+            actionable_errors.append(f"Wake-word detection loop is not running ({ww_diag}).")
+
+        is_healthy = mic_listening and (ww_listening or self.muted)
+
+        return {
+            "healthy": is_healthy,
+            "status": self.current_status,
+            "muted": self.muted,
+            "microphone": {
+                "active": mic_listening,
+                "device": mic_name,
+                "index": getattr(self.listener, "active_input_device_index", None)
+            },
+            "wakeword": {
+                "active": ww_listening,
+                "available": ww_avail,
+                "diagnostic": ww_diag,
+                "engine": getattr(config, "wakeword_engine", "mock")
+            },
+            "tts": {
+                "provider": tts_name
+            },
+            "tools_registered": tools_count,
+            "actionable_errors": actionable_errors
+        }
 
     def stop(self):
         """Halts all background threads cleanly."""
         logger.info("Shutting down Jarvis Voice Core...")
         self._update_status("STOPPED")
+        try:
+            from core.system_resource_manager import system_resource_manager
+            system_resource_manager.stop()
+        except Exception:
+            pass
         self.camera_manager.force_stop()
         self.proactive_daemon.stop()
         self.wakeword_detector.stop()
@@ -209,6 +280,10 @@ class JarvisRuntime:
         if on_audio_amplitude: self.on_audio_amplitude_cb = on_audio_amplitude
         if on_camera_state: self.on_camera_state_cb = on_camera_state
         if on_gesture: self.on_gesture_cb = on_gesture
+
+    def _on_panel_visibility(self, action: str):
+        if self.panel_visibility_cb:
+            self._trigger_cb(self.panel_visibility_cb, action)
 
     def _update_status(self, status: str, utterance_id: Optional[str] = None):
         with self._state_lock:
@@ -308,6 +383,8 @@ class JarvisRuntime:
         logger.info(f"[UTTERANCE {utterance_id}][MANUAL_TALK_ACTIVATED] Manual talk button pressed.")
         self._update_status("LISTENING", utterance_id)
         self._update_speech_text("Listening...")
+        if hasattr(self.listener, "suppress_chime_feedback"):
+            self.listener.suppress_chime_feedback(0.22)
         self.tts_manager.play_wake_chime()
         self.listener.trigger_manual_recording(manual=True)
 
@@ -317,6 +394,18 @@ class JarvisRuntime:
             logger.info(f"[WAKE_FROM_SLEEP] Wake phrase '{word}' detected while in SLEEPING mode. Restoring pipeline.")
             self.wake_up(source="wakeword")
             return
+
+        # State machine guard: Do not interrupt ongoing critical pipeline processing
+        if self.current_status in ("LISTENING", "TRANSCRIBING", "UNDERSTANDING", "EXECUTING", "THINKING"):
+            logger.info(f"[WAKEWORD_SUPPRESSED] Ignoring wake word '{word}' while assistant is busy in state '{self.current_status}'.")
+            return
+
+        now = time.time()
+        # Cooldown guard: debounce rapid duplicate wake word triggers (< 1.2s)
+        if (now - getattr(self, "_last_wakeword_time", 0.0)) < 1.2:
+            logger.debug(f"[WAKEWORD_DEBOUNCED] Ignored rapid duplicate wake callback within 1.2s.")
+            return
+        self._last_wakeword_time = now
 
         if self._tts_speaking_lock or self.tts_manager.is_speaking():
             if self.tts_manager.is_playing() or word in ("manual_click", "button", "force"):
@@ -333,6 +422,10 @@ class JarvisRuntime:
         logger.info(f"[UTTERANCE {utterance_id}][WAKE_WORD_DETECTED] Keyword: '{word}'")
         self._update_status("LISTENING", utterance_id)
         self._update_speech_text("Listening...")
+
+        # Suppress chime feedback from entering speech recording buffer
+        if hasattr(self.listener, "suppress_chime_feedback"):
+            self.listener.suppress_chime_feedback(0.22)
 
         # Play instantaneous acoustic earcon chime acknowledging wake word
         self.tts_manager.play_wake_chime()
@@ -365,6 +458,21 @@ class JarvisRuntime:
         self._update_speech_text("Listening...")
 
     def _on_speech_end(self, wav_path: str):
+        # Discard empty, non-existent, or sub-threshold audio files immediately without running STT
+        if not wav_path or not os.path.exists(wav_path):
+            self._update_status("STANDBY")
+            self._update_speech_text("Standby. Say 'Santra' or speak into microphone.")
+            return
+
+        # Deduplicate WAV segments to prevent identical audio file reprocessing
+        with self._speech_end_lock:
+            if wav_path in self._recent_wav_paths:
+                logger.info(f"[DEDUPLICATION] Discarding duplicate WAV segment already processed: {wav_path}")
+                return
+            self._recent_wav_paths.append(wav_path)
+            if len(self._recent_wav_paths) > 20:
+                self._recent_wav_paths.pop(0)
+
         utterance_id = uuid.uuid4().hex[:6].upper()
         t_speech_end = time.time()
         trace = tracer.start_trace()
@@ -495,7 +603,7 @@ class JarvisRuntime:
             t0_start = time.time()
 
         # Guard against processing an utterance that was superseded by newer speech or manual talk
-        if self._active_utterance_id and utterance_id != self._active_utterance_id and self.current_status not in ("STANDBY", "IDLE"):
+        if self._active_utterance_id and utterance_id != self._active_utterance_id:
             logger.info(f"[UTTERANCE {utterance_id}] Discarding stale command worker execution (active utterance: {self._active_utterance_id}).")
             return
 
@@ -503,29 +611,60 @@ class JarvisRuntime:
 
         # Guard against processing in SLEEPING mode (suppress background speech, allow wake phrases)
         if self.current_status == "SLEEPING":
+            from core.pronunciation_manager import pronunciation_manager
             clean_text = text.lower().strip()
-            if any(w in clean_text for w in ["santra", "jarvis", "wake up"]):
-                logger.info(f"[SLEEP_WAKE_UTTERANCE] Wake command spoken while in SLEEPING mode: '{text}'")
+            is_wake, var, conf = pronunciation_manager.evaluate_candidate(clean_text)
+            if is_wake or any(w in clean_text for w in ["santra", "samtra", "suntra", "santhra", "jarvis", "wake up"]):
+                logger.info(f"[SLEEP_WAKE_UTTERANCE] Wake command spoken while in SLEEPING mode: '{text}' (variant: '{var}')")
                 self.wake_up(source="voice")
                 # Extract trailing command after wake phrase (preserving command arguments and casing)
-                trailing = ""
-                m = re.match(r"^\s*(?:(?:hey|hello|hi)?\s*(?:santra|jarvis)\s*[,:]?\s*|wake\s+up\s*[,:]?\s*)(.+)$", text, re.IGNORECASE)
-                if m:
-                    trailing = m.group(1).strip()
-                else:
-                    norm = self.normalizer.normalize(text)["normalized"].strip()
-                    if norm:
-                        trailing = norm
+                is_addr, canon, trailing = pronunciation_manager.extract_wake_and_command(text)
+                if not trailing:
+                    m = re.match(r"^\s*(?:(?:hey|hello|hi)?\s*(?:santra|samtra|suntra|jarvis)\s*[,:]?\s*|wake\s+up\s*[,:]?\s*)(.+)$", text, re.IGNORECASE)
+                    if m:
+                        trailing = m.group(1).strip()
+                    else:
+                        norm = self.normalizer.normalize(text)["normalized"].strip()
+                        if norm:
+                            trailing = norm
                 if trailing and len(trailing) > 1:
                     logger.info(f"[SLEEP_TRAILING_COMMAND] Dispatching trailing command: '{trailing}'")
                     self.process_command(trailing)
+                if self._active_utterance_id == utterance_id:
+                    self._active_utterance_id = None
                 return
             else:
                 logger.info(f"[SLEEP_REJECTED] Discarding background speech while in SLEEPING mode: '{text}'")
+                if self._active_utterance_id == utterance_id:
+                    self._active_utterance_id = None
                 return
 
         self._update_status("UNDERSTANDING", utterance_id)
         clean_text = text.lower().strip()
+
+        # 0. Active Conversational PendingActionContext (Follow-up & Clarification Resolution)
+        pending_act = self.conversation_manager.get_pending_action()
+        if pending_act:
+            if pending_act.can_resolve(clean_text):
+                logger.info(f"[UTTERANCE {utterance_id}][PENDING_RESOLVED] Resolving pending clarification for '{pending_act.target}' with response: '{clean_text}'")
+                self.conversation_manager.clear_pending_action()
+                self.pending_intent = None
+                resolved = pending_act.resolve_action(clean_text)
+                if resolved.get("cancelled"):
+                    cancel_msg = resolved.get("message", "Action cancelled, Sir.")
+                    self.response_manager.conversation(cancel_msg, speak=True)
+                    self._update_status("STANDBY", utterance_id)
+                    self._update_speech_text(cancel_msg)
+                    return
+                # Execute resolved action directly
+                self._execute_intent(resolved, confirm=True, speak=True, utterance_id=utterance_id)
+                self._update_status("STANDBY", utterance_id)
+                return
+            else:
+                # User did not answer the pending clarification (e.g. topic change)
+                logger.info(f"[UTTERANCE {utterance_id}][PENDING_SUPERSEDED] Follow-up '{clean_text}' does not answer pending clarification '{pending_act.clarification_question}'. Discarding pending action and executing new request.")
+                self.conversation_manager.clear_pending_action()
+                self.pending_intent = None
 
         # 1. Safety & Workspace confirmation handler
         if self.pending_intent:
@@ -802,6 +941,8 @@ class JarvisRuntime:
                 return
 
         self._process_single_command(text, raw_full_text=text, speak=True, utterance_id=utterance_id, t0_start=t0_start, whisper_ms=whisper_ms, audio_dur_s=audio_dur_s)
+        if self._active_utterance_id == utterance_id:
+            self._active_utterance_id = None
 
     def _process_single_command(
         self,
@@ -856,7 +997,17 @@ class JarvisRuntime:
         # Case 1: Clarification Needed
         if req.intent == "CLARIFICATION_REQUIRED":
             clarification_msg = req.clarification_prompt or f"Could you please clarify what you mean by '{req.target}'?"
-            self.conversation_manager.pending_clarification = req.entities.get("ambiguous_type")
+            from core.conversation_manager import PendingActionContext
+            pending_ctx = PendingActionContext(
+                original_request=raw_full_text,
+                intent=req.action or "clarification",
+                action=req.action,
+                target=req.target,
+                clarification_question=clarification_msg,
+                clarification_type=req.entities.get("ambiguous_type", "generic") if req.entities else "generic",
+                valid_options=["yes", "no", "cancel"]
+            )
+            self.conversation_manager.set_pending_action(pending_ctx)
             self.response_manager.conversation(clarification_msg, speak=speak)
             self._notify_pipeline_stage(raw_full_text, normalized_text, "clarify:request", "N/A (Clarification)", clarification_msg, "Speaking")
             return {"success": True, "action": "clarification", "message": clarification_msg}
@@ -1119,7 +1270,7 @@ class JarvisRuntime:
             "open_website", "history_query", "terminal_execute", "system_telemetry",
             "open_new_chrome_tab", "open_new_chrome_window",
             "project_control", "filesystem_control", "web_search",
-            "time_query", "date_query", "math_calculation", "media_control",
+            "time_query", "date_query", "math_calculation", "media_control", "spotify_control",
             "test_speech", "test_microphone",
             "browser_control", "browser_tab_control", "browser_action", "youtube_control", "content_generation",
             "local_search", "developer_workflow", "follow_up",
@@ -1127,7 +1278,7 @@ class JarvisRuntime:
             "command_management", "custom_command",
             "turn_on_camera", "turn_off_camera", "start_hand_tracking", "stop_hand_tracking", "camera_snapshot",
             "workspace.launch", "workspace_control", "launch_workspace", "power_control", "power.scheme", "battery_info",
-            "unsupported_capability", "invalid_command"
+            "panel_visibility", "unsupported_capability", "invalid_command"
         ]
 
         if (intent_lower in os_intents or
@@ -1225,6 +1376,17 @@ class JarvisRuntime:
             return res
 
         # Handle Standby, Sleep & Listening Lifecycle Actions Directly in Runtime
+        if action == "wake_acknowledgment":
+            msg = "I'm listening, Sir. How can I help?"
+            res = {"success": True, "action": "wake_acknowledgment", "target": "runtime", "message": msg}
+            self.response_manager.conversation(msg, speak=speak)
+            self._update_status("STANDBY", uid)
+            self._update_speech_text(msg)
+            if self.on_action_complete_cb:
+                self._trigger_cb(self.on_action_complete_cb, action, True, msg)
+            self._notify_pipeline_stage("", "", f"runtime:{action}", "JarvisRuntime", msg, "Speaking")
+            return res
+
         if action in ["enter_standby", "disable_listening", "enable_listening", "sleep_assistant", "enter_sleep", "sleep_mode"]:
             if action in ["sleep_assistant", "enter_sleep", "sleep_mode"]:
                 self.enter_sleep_mode(reason="voice_command", speak=speak)
@@ -1345,6 +1507,21 @@ class JarvisRuntime:
             self.pending_intent = result.get("pending_intent")
             if self.pending_intent:
                 self.pending_intent["timestamp"] = time.time()
+                from core.conversation_manager import PendingActionContext
+                pending_ctx = PendingActionContext(
+                    original_request=self.pending_intent.get("original_request") or intent_node.get("raw", ""),
+                    intent=self.pending_intent.get("intent", intent),
+                    action=self.pending_intent.get("action", action),
+                    target=self.pending_intent.get("target", intent_node.get("target", "")),
+                    target_url=self.pending_intent.get("target_url") or intent_node.get("url"),
+                    target_domain=self.pending_intent.get("target_domain") or intent_node.get("domain"),
+                    browser=self.pending_intent.get("browser") or intent_node.get("browser", "chrome"),
+                    search_query=self.pending_intent.get("search_query") or intent_node.get("query", ""),
+                    clarification_question=result.get("message", ""),
+                    clarification_type=self.pending_intent.get("clarification_type", "generic"),
+                    valid_options=self.pending_intent.get("valid_options", [])
+                )
+                self.conversation_manager.set_pending_action(pending_ctx)
             self.response_manager.conversation(result["message"], speak=speak)
             self._update_speech_text(result["message"])
             self._update_status("STANDBY")
@@ -1459,6 +1636,10 @@ class JarvisRuntime:
                 self._update_speech_text("Standby. Say 'Santra' or speak into microphone.")
                 logger.info("[RETURNED_TO_STANDBY] Speech complete. Voice Core on Standby.")
 
+    def toggle_mute(self):
+        """Toggles the microphone mute state."""
+        self.set_mute_state(not self.muted)
+
     def set_mute_state(self, muted: bool):
         self.muted = muted
         if muted:
@@ -1493,6 +1674,11 @@ class JarvisRuntime:
             self.listener.set_speaking_active(False)
         self.pending_intent = None
         self._update_status("STANDBY")
+        try:
+            from core.system_resource_manager import system_resource_manager
+            system_resource_manager.set_profile("STANDBY")
+        except Exception:
+            pass
         msg = "Standing by, Sir."
         self._update_speech_text(msg)
         if speak and not self.muted:
@@ -1502,8 +1688,9 @@ class JarvisRuntime:
         """Enters low-resource Sleep Mode:
         - Halts ongoing TTS and clears pending operations safely.
         - Disables background VAD and full speech transcription.
+        - Unloads heavy Whisper model from memory if configured to save RAM/VRAM.
         - Keeps single microphone stream alive feeding strictly the local wake-word detector.
-        - Suppresses all cloud AI and Nemotron requests.
+        - Reduces telemetry sampling frequency to conserve battery and CPU.
         - Transitions authoritative state to SLEEPING and updates UI.
         """
         with self._state_lock:
@@ -1538,7 +1725,20 @@ class JarvisRuntime:
         self.listener.set_speaking_active(False)
         self.listener.set_sleep_mode(True)
 
-        # 5. Transition state to SLEEPING
+        # 5. Sleep profile and idle model memory release
+        try:
+            from core.system_resource_manager import system_resource_manager
+            system_resource_manager.set_profile("SLEEPING")
+        except Exception:
+            pass
+
+        if getattr(config, "model_idle_timeout_sec", 600.0) > 0:
+            try:
+                self.transcriber.unload_model()
+            except Exception as ue:
+                logger.debug(f"Error unloading model on sleep: {ue}")
+
+        # 6. Transition state to SLEEPING
         self._update_status("SLEEPING")
         self._update_speech_text("Sleep mode active. Say 'Santra' or click Wake to resume.")
         logger.info("[SLEEP_MODE] SANTRA is now SLEEPING. Listening strictly for wake phrase 'Santra'.")
@@ -1548,6 +1748,8 @@ class JarvisRuntime:
         """Transitions JARVIS from SLEEPING to WAKING then ACTIVE/STANDBY/LISTENING.
         - Validates wake event (applies debounce).
         - Re-enables full listening and transcription pipeline.
+        - Asynchronously pre-warms transcriber model in background.
+        - Switches resource manager to ACTIVE profile.
         - Plays wake earcon chime or acknowledgment.
         - Preserves trailing command audio via listener pre-roll.
         """
@@ -1566,10 +1768,24 @@ class JarvisRuntime:
         # 2. Restore normal listener pipeline
         self.listener.set_sleep_mode(False)
 
-        # 3. Play instantaneous acoustic earcon chime
+        # 3. Pre-warm transcriber model in background
+        try:
+            self.transcriber.preload_in_background()
+        except Exception as pe:
+            logger.debug(f"Transcriber prewarm on wake: {pe}")
+
+        try:
+            from core.system_resource_manager import system_resource_manager
+            system_resource_manager.set_profile("ACTIVE")
+        except Exception:
+            pass
+
+        # 4. Play instantaneous acoustic earcon chime with feedback suppression
+        if hasattr(self.listener, "suppress_chime_feedback"):
+            self.listener.suppress_chime_feedback(0.22)
         self.tts_manager.play_wake_chime()
 
-        # 4. Transition to ACTIVE / LISTENING or STANDBY
+        # 5. Transition to ACTIVE / LISTENING or STANDBY
         if source in ("voice", "wakeword", "voice_command"):
             utterance_id = uuid.uuid4().hex[:6].upper()
             self._active_utterance_id = utterance_id
@@ -1640,7 +1856,8 @@ class JarvisRuntime:
         ww_available = self.wakeword_detector.is_available() if self.wakeword_detector else False
         ww_listening = self.wakeword_detector.is_listening() if self.wakeword_detector else False
         raw_phrases = getattr(self.wakeword_detector, "wake_words", None)
-        ww_phrases = list(raw_phrases) if isinstance(raw_phrases, (list, tuple)) else ["santra", "hey santra"]
+        default_phrases = getattr(config, "wake_words", ["santra", "hey santra", "jarvis", "hey jarvis"])
+        ww_phrases = list(raw_phrases) if isinstance(raw_phrases, (list, tuple)) else list(default_phrases)
         ww_thresh = getattr(self.wakeword_detector, "sensitivity", 0.45)
         is_mock_ww = isinstance(self.wakeword_detector, MockWakeWordDetector)
 

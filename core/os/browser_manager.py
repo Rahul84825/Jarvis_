@@ -716,23 +716,163 @@ class BrowserManager:
         return {"success": True, "tabs": [], "count": 0, "message": "No browser windows detected."}
 
     # ==========================================
-    # DOM INSPECTION & ELEMENT INTERACTION
+    # DOM INSPECTION, PAGE ANALYSIS & ELEMENT INTERACTION
     # ==========================================
     def inspect_page(self) -> Dict[str, Any]:
-        """Inspects active browser webpage via CDP with verified reporting.
-        Returns clear actionable status if CDP is unavailable.
-        """
+        """Inspects active browser webpage via CDP."""
         return self.cdp.inspect_active_page()
+
+    def analyze_active_page(self) -> Dict[str, Any]:
+        """Performs robust multi-tier page analysis:
+        Tier 1: Chrome DevTools Protocol (CDP) DOM & rendered text if port 9222 is active.
+        Tier 2: Windows UI Automation accessibility tree on active browser window.
+        Tier 3: Browser window metadata & title extraction.
+        Tier 4: Multimodal screen capture & OCR text extraction fallback.
+        """
+        # Tier 1: Attempt CDP Inspection
+        cdp_res = self.cdp.inspect_active_page()
+        if cdp_res.get("success") and (cdp_res.get("content") or cdp_res.get("headings")):
+            return cdp_res
+
+        # If CDP succeeded in connecting to a tab but content was empty (e.g. blank tab)
+        if cdp_res.get("success") and cdp_res.get("cdp_available"):
+            return cdp_res
+
+        # Tier 2: Windows UI Automation Accessibility Tree Fallback
+        extracted_title = ""
+        extracted_url = ""
+        accessible_text = ""
+        try:
+            from core.interaction.desktop_context_service import desktop_context_service
+            ctx = desktop_context_service.get_current_context()
+            win_title = ctx.window_title or ""
+            proc_name = (ctx.process_name or "").lower()
+
+            # Check if active window is a known browser
+            is_browser = any(b in proc_name or b in win_title.lower() for b in ["chrome", "brave", "edge", "firefox", "opera"])
+            if is_browser and win_title:
+                # Clean window title (e.g. "Google - Google Chrome" -> "Google")
+                extracted_title = win_title
+                for suffix in [" - Google Chrome", " - Brave", " - Microsoft Edge", " - Mozilla Firefox"]:
+                    if extracted_title.endswith(suffix):
+                        extracted_title = extracted_title[:-len(suffix)].strip()
+                        break
+
+                # Extract address bar URL and document text from controls
+                targets = getattr(ctx, "available_targets", []) or getattr(ctx, "available_controls", [])
+                doc_lines = []
+                for ctrl in targets:
+                    ctrl_name = getattr(ctrl, "name", "") or ""
+                    ctrl_val = getattr(ctrl, "current_value", "") or ""
+                    ctrl_type = str(getattr(ctrl, "control_type", "")).lower()
+
+                    # Detect Address Bar
+                    if any(k in ctrl_name.lower() for k in ["address and search bar", "address bar", "search or enter address"]):
+                        extracted_url = ctrl_val or ctrl_name
+                    elif "http://" in ctrl_val or "https://" in ctrl_val:
+                        extracted_url = ctrl_val
+
+                    # Detect Document & Accessible Text
+                    if "document" in ctrl_type or "edit" in ctrl_type or "pane" in ctrl_type:
+                        if ctrl_val and ctrl_val != ctrl_name and len(ctrl_val) > 10:
+                            doc_lines.append(ctrl_val)
+                        elif ctrl_name and len(ctrl_name) > 15:
+                            doc_lines.append(ctrl_name)
+
+                if doc_lines:
+                    accessible_text = " ".join(doc_lines).strip()
+                    if len(accessible_text) > 30:
+                        return {
+                            "success": True,
+                            "source": "accessibility",
+                            "cdp_available": False,
+                            "title": extracted_title,
+                            "url": extracted_url,
+                            "headings": [],
+                            "content": accessible_text[:3000],
+                            "message": f"Active page: '{extracted_title}' (Analyzed via UI Accessibility Tree)."
+                        }
+        except Exception as e:
+            logger.debug(f"[BROWSER] Accessibility page analysis fallback error: {e}")
+
+        # Tier 3 & 4: Screen Capture + OCR Fallback
+        try:
+            from core.vision.screen_capture import screen_capture_manager
+            from core.vision.ocr_engine import ocr_engine
+            # Capture active window
+            img, _ = screen_capture_manager.capture()
+            if img:
+                ocr_res = ocr_engine.extract_text(img)
+                if ocr_res.success and ocr_res.has_meaningful_content():
+                    clean_ocr = ocr_res.text.strip()
+                    if len(clean_ocr) > 15:
+                        page_t = extracted_title or "Active Browser Screen"
+                        return {
+                            "success": True,
+                            "source": "ocr",
+                            "cdp_available": False,
+                            "title": page_t,
+                            "url": extracted_url,
+                            "headings": [],
+                            "content": clean_ocr[:3000],
+                            "message": f"Active page: '{page_t}' (Analyzed via Screen Text Extraction)."
+                        }
+        except Exception as e:
+            logger.debug(f"[BROWSER] OCR page analysis fallback error: {e}")
+
+        # Return truthful diagnostic guidance if no tier yielded readable text
+        diag = self.cdp.get_endpoint_diagnostics()
+        return {
+            "success": False,
+            "cdp_available": False,
+            "chrome_running": diag["chrome_running"],
+            "port_conflict": diag["port_conflict"],
+            "status": diag["status"],
+            "title": extracted_title,
+            "url": extracted_url,
+            "message": diag["guidance"]
+        }
+
+    def search_active_page(self, query: str) -> Dict[str, Any]:
+        """Searches for text or navigates within the current active webpage."""
+        if not query:
+            return {"success": False, "message": "Please specify what to search for on this page."}
+
+        # If CDP is available, evaluate window.find
+        if self.cdp.is_available():
+            clean_q = query.replace("'", "\\'")
+            eval_res = self.cdp.evaluate_script(f"window.find('{clean_q}')")
+            if eval_res.get("success"):
+                found = bool(eval_res.get("value", True))
+                if found:
+                    return {"success": True, "action": "find_in_page", "message": f"Found '{query}' on active page."}
+                else:
+                    return {"success": True, "action": "find_in_page", "message": f"'{query}' was not found on the active page."}
+
+        # Fallback to focusing browser window and triggering in-page search (Ctrl+F)
+        if self.focus_browser():
+            self._send_shortcut(vk=0x46, ctrl=True)  # Ctrl+F
+            time.sleep(0.1)
+            try:
+                import pyautogui
+                pyautogui.write(query, interval=0.02)
+                pyautogui.press("enter")
+            except Exception:
+                pass
+            return {"success": True, "action": "find_in_page", "message": f"Searching active page for '{query}'."}
+
+        return {"success": False, "message": "No active browser window detected to search within."}
 
     def click_element(self, selector: str) -> Dict[str, Any]:
         """Interacts with an element on the active page via CDP.
         Does not falsely report success or send global shortcuts when CDP is unavailable.
         """
         if not self.cdp.is_available():
+            diag = self.cdp.get_endpoint_diagnostics()
             return {
                 "success": False,
                 "cdp_available": False,
-                "message": "DOM element interaction requires Chrome DevTools Protocol (CDP). Launch Chrome with '--remote-debugging-port=9222' on localhost to enable DOM automation."
+                "message": f"DOM element interaction requires Chrome DevTools Protocol (CDP). {diag['guidance']}"
             }
 
         tab = self.cdp.get_active_tab()

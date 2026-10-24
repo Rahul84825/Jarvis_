@@ -78,6 +78,8 @@ class TTSManager:
         self._current_job_id: Optional[str] = None
         self._current_generation_id: int = 1
         self._last_interrupted_generation_id: Optional[int] = None
+        self._last_chime_time: float = 0.0
+        self._chime_lock = threading.Lock()
         self._current_sentence_idx: int = 0
         self._total_sentences: int = 0
         self._current_sentence_text: str = ""
@@ -365,6 +367,16 @@ class TTSManager:
 
     def play_wake_chime(self):
         """Plays a crisp non-blocking audio earcon chime acknowledging wake word."""
+        if not getattr(config, "enable_wake_chime", True):
+            return
+
+        now = time.time()
+        with self._chime_lock:
+            if (now - self._last_chime_time) < 1.0:
+                logger.debug("[CHIME_DEBOUNCED] Ignored rapid duplicate chime trigger (<1.0s).")
+                return
+            self._last_chime_time = now
+
         def _beep():
             try:
                 import winsound

@@ -12,13 +12,13 @@ class CommandNormalizer:
     def __init__(self):
         logger.info("Initializing Command Normalizer.")
 
-        # Wake word variations for Santra (and legacy Jarvis/Goliya aliases)
+        # Wake word variations for Santra (with greetings and Indian accent variants)
         self.wake_words = [
-            r"\b(hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*santra(?:'s)?\b",
-            r"\b(hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*jarvis(?:'s)?\b",
-            r"\b(hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*goliya(?:'s)?\b",
+            r"\b(?:hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*(?:santra|samtra|suntra|sumtra|santhra|san[\-\s]+tra|sandra|santram|shantra)(?:'s)?\b",
+            r"\b(?:hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*jarvis(?:'s)?\b",
+            r"\b(?:hey|hello|hi|namaste|yo|good morning|good evening|good afternoon)?\s*goliya(?:'s)?\b",
             r"\bhey\s+buddy\b",
-            r"\b(sandra|santa|santana|santhra|samtra|santram|shantra|dervis|derbis|darwis|carves|charles|gerald|travis|garbage|device|assistant|jal|jals|goli)\b"
+            r"\b(santa|santana|dervis|derbis|darwis|carves|gerald|jal|jals|goli)\b"
         ]
 
         # Polite phrases to remove (longer/more specific phrases first)
@@ -87,8 +87,9 @@ class CommandNormalizer:
 
 
             # App name aliases & fuzzy command shortcuts
-            (r"\b(visual studio code|vs code|vieskund|vees code|viscode|vies kund|code)\b", "vscode"),
-            (r"\b(?:(?:the\s+)?(?:google\s+)?chrome(?:\s+browser)?|krone|crome|room)\b", "chrome"),
+            (r"\b(visual studio code|vs code|vieskund|vees code|viscode|vies kund)\b", "vscode"),
+            (r"\b(?:open|launch|bring up|start)\s+code\b", "open vscode"),
+            (r"\b(?:(?:the\s+)?(?:google\s+)?chrome(?:\s+browser)?|krone|crome)\b", "chrome"),
             (r"\b(?:the\s+)?brave(?:\s+browser)?\b", "brave"),
             (r"\b(you\s+tube|u\s+tube|utube)\b", "youtube"),
             (r"\bspottify\b", "spotify"),
@@ -227,6 +228,15 @@ class CommandNormalizer:
             result_commands.append(norm_cmd)
         return result_commands if result_commands else [text]
 
+    def extract_assistant_address(self, text: str) -> tuple[bool, str, str]:
+        """Extracts whether Santra (or a validated variant) was addressed at the start of speech.
+
+        Returns:
+            tuple[bool, str, str]: (is_addressed, canonical_name, command)
+        """
+        from core.pronunciation_manager import pronunciation_manager
+        return pronunciation_manager.extract_wake_and_command(text)
+
     def normalize(self, text: str) -> dict:
         """Normalizes user speech transcript.
 
@@ -253,6 +263,10 @@ class CommandNormalizer:
                 "is_explicit_search": True,
                 "search_query": extracted_query
             }
+
+        # Extract domain candidates before rewriting to preserve structured domain tokens
+        from core.os.domain_manager import domain_manager
+        preserved_domains = domain_manager.extract_domain_candidates(text)
 
         original_text = text
         normalized = text.lower().strip()
@@ -311,10 +325,11 @@ class CommandNormalizer:
         words = normalized.split()
         dedup_words = []
         for word in words:
-            # Strip trailing period if not a website (e.g. google.com) or decimal number
+            # Strip trailing punctuation while safely preserving domains and decimal numbers
             cleaned_word = word
-            if not re.match(r'^\d+\.\d+$', cleaned_word) and not re.search(r'\.[a-z]{2,}', cleaned_word):
-                cleaned_word = cleaned_word.strip('.!?,:;')
+            if not re.match(r'^\d+\.\d+$', cleaned_word):
+                # If word has domain ending followed by punctuation, strip trailing punctuation only
+                cleaned_word = re.sub(r'[\.\,\?\!\;:]+$', '', cleaned_word)
             if cleaned_word and (not dedup_words or dedup_words[-1] != cleaned_word):
                 dedup_words.append(cleaned_word)
 
@@ -327,6 +342,7 @@ class CommandNormalizer:
             clean_raw = re.sub(r"\s*[\.\,\?\!]+$", "", clean_raw).strip()
             final_normalized = clean_raw if clean_raw else original_text.lower().strip()
 
+        logger.debug(f"[DOMAIN_TRACE][NORMALIZER] input='{original_text}', preserved_domains={preserved_domains}, normalized='{final_normalized}'")
         logger.debug(f"Normalized: '{original_text}' -> '{final_normalized}' (Removed: {removed})")
 
         return {

@@ -149,7 +149,16 @@ class IntentEngine:
             return False
         if re.search(r"^(?:where\s+did\s+i\s+save|where\s+is\s+my\s+.*(?:program|file|code|repository|project)|search\s+my\s+files)\b", clean_text, re.IGNORECASE):
             return False
-        if re.search(r"^(?:what\s+are\s+the\s+important\s+points|what\s+does\s+this\s+error\s+mean|what\s+is\s+this\s+button\s+used\s+for|compare\s+these\s+two)\b", clean_text, re.IGNORECASE):
+        if re.search(r"^(?:what\s+are\s+the\s+important\s+points|what\s+does\s+this\s+error\s+mean|what\s+does\s+that\s+error\s+mean|what\s+is\s+this\s+button\s+used\s+for|compare\s+these\s+two)\b", clean_text, re.IGNORECASE):
+            return False
+
+        if re.search(r"^(?:explain|describe|tell\s+me)\s+(?:what\s+is\s+on|what's\s+on)\s+(?:my\s+|this\s+|the\s+)?(?:screen|page)\b", clean_text, re.IGNORECASE):
+            return False
+        if re.search(r"^(?:explain|analyze|inspect|summarize)\s+(?:what\s+is\s+on\s+)?(?:my\s+|this\s+|the\s+|current\s+)?(?:screen|page|website|tab|code|error|visible\s+code)\b", clean_text, re.IGNORECASE):
+            return False
+        if re.search(r"^what\s+(?:is|'s)\s+on\s+(?:this|my|the)\s+screen\b", clean_text, re.IGNORECASE):
+            return False
+        if re.search(r"^explain\s+(?:the\s+)?code\s+visible\b", clean_text, re.IGNORECASE):
             return False
 
         if re.search(r"^explain\s+(?:this\s+)?(?:python\s+)?error\b", clean_text, re.IGNORECASE) or re.search(r"^explain\s+what\s+tools\b", clean_text, re.IGNORECASE):
@@ -318,6 +327,16 @@ class IntentEngine:
                 "raw_text": raw_text,
                 "fallback_message": "I didn't catch that. Please speak again."
             }
+
+        # Check Spotify Commands
+        spotify_node = self._parse_spotify_command(raw_text, clean, effective_raw)
+        if spotify_node:
+            return spotify_node
+
+        # Check Panel Visibility Commands (Show / Hide / Minimize / Restore Santra)
+        panel_node = self._parse_panel_visibility_command(raw_text, clean, effective_raw)
+        if panel_node:
+            return panel_node
 
         # -------------------------------------------------------------
         # 1. DIAGNOSTICS & SYSTEM TESTING
@@ -817,16 +836,43 @@ class IntentEngine:
 
         # Real File Creation & Code Generation
         file_create_patterns = [
-            r"^(?:create|write|generate|save)\s+(?:a|an|the|this)?\s*(?:(?:python|c\+\+|cpp|c|java|javascript|typescript|react|node\.?js|html|css|sql|rust|go|markdown)\s+)?(?:program|script|code|component|api\s+route|route|schema|explanation|readme|file)\b",
+            r"^(?:create|write|generate|save)\s+(?:a|an|the|this)?\s*(?:new\s+)?(?:(?:python|c\+\+|cpp|c|java|javascript|typescript|react|node\.?js|html|css|sql|rust|go|markdown)\s+)?(?:program|script|code|component|api\s+route|route|schema|explanation|readme|file)\b",
+            r"^(?:create|write|generate|save)\s+(?:a\s+)?(?:new\s+)?(?:[a-zA-Z0-9_\-\.]+\.(?:py|cpp|cc|c|h|hpp|java|js|ts|jsx|tsx|html|css|sql|md|markdown|txt|json|sh|ps1))\b",
             r"^(?:create|write|generate)\s+(?:a\s+)?readme\b",
             r"^save\s+this\s+explanation\s+as\s+a\b"
         ]
         if any(re.search(pat, clean, re.IGNORECASE) for pat in file_create_patterns) or \
            any(re.search(pat, effective_raw, re.IGNORECASE) for pat in file_create_patterns):
+            # Extract target filename if specified
+            extracted_filename = ""
+            m_fn = re.search(r"\b([a-zA-Z0-9_\-]+\.(?:py|cpp|cc|c|h|hpp|java|js|ts|jsx|tsx|html|css|sql|md|markdown|txt|json|sh|ps1))\b", effective_raw, re.IGNORECASE)
+            if not m_fn:
+                m_called = re.search(r"(?:called|named)\s+([a-zA-Z0-9_\-\.]+)", effective_raw, re.IGNORECASE)
+                if m_called:
+                    extracted_filename = m_called.group(1).strip()
+            else:
+                extracted_filename = m_fn.group(1).strip()
+
+            # Extract destination folder if specified
+            extracted_dest = ""
+            m_dest = re.search(r"\b(?:in|on|into|to)\s+(?:my\s+|the\s+)?(desktop|documents|downloads|dsa)\b", effective_raw, re.IGNORECASE)
+            if m_dest:
+                dest_raw = m_dest.group(1).lower()
+                extracted_dest = "Desktop" if dest_raw == "desktop" else ("Documents" if dest_raw == "documents" else ("Downloads" if dest_raw == "downloads" else "dsa"))
+
+            if extracted_dest and extracted_filename:
+                target_path = f"{extracted_dest}/{extracted_filename}"
+            elif extracted_filename:
+                target_path = extracted_filename
+            else:
+                target_path = "file"
+
             return {
                 "intent": "file_management.create_file",
                 "action": "create_file",
-                "target": "file",
+                "target": target_path,
+                "filename": extracted_filename or "test.py",
+                "destination": extracted_dest or "Desktop",
                 "confidence": 0.98,
                 "query": clean,
                 "raw_text": raw_text
@@ -1397,8 +1443,54 @@ class IntentEngine:
         if re.match(r"^(?:refresh|reload)(?:\s+(?:the\s+)?(?:current\s+)?page)?$", clean, re.IGNORECASE):
             return {"intent": "browser_tab_control", "action": "reload_page", "target": "chrome", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
 
-        if re.match(r"^read\s+(?:the\s+)?(?:current\s+)?(?:web)?page$", clean, re.IGNORECASE):
-            return {"intent": "browser_action", "action": "read_page", "target": "current_page", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+        # Page Reading, Summarization, and Deep Analysis
+        page_analysis_pat = r"^(?:analyze|explain|inspect|summarize|read|tell\s+me\s+about)\s+(?:the\s+|this\s+|current\s+)?(?:web)?(?:page|website|tab|site)(?:\s+content)?$"
+        if re.match(page_analysis_pat, clean, re.IGNORECASE) or clean in [
+            "analyze this page", "analyze page", "explain this website", "explain this page",
+            "explain the page", "summarize this page", "summarize the page", "summarize current tab",
+            "summarize this tab", "summarize the current tab", "read this page", "read the page",
+            "what does this page say", "what is on this page", "what does this website say",
+            "read webpage", "read page"
+        ]:
+            return {"intent": "browser_action", "action": "analyze_page", "target": "current_page", "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # In-page and Current Website Search Patterns
+        page_search_m = re.match(r"^(?:search|find|look\s*up)\s+(?:(?:in|on|within)\s+(?:this|the|current)\s+(?:website|page|tab)|(?:this|the|current)\s+(?:website|page|tab)\s+(?:for|about))\s+(.+)$", clean, re.IGNORECASE)
+        if not page_search_m:
+            page_search_m = re.match(r"^(?:search|find)\s+(?:this|the)\s+(?:website|page)\s+for\s+(.+)$", clean, re.IGNORECASE)
+        if page_search_m:
+            search_q = page_search_m.group(1).strip()
+            return {"intent": "browser_action", "action": "search_page", "target": "current_page", "query": search_q, "confidence": 0.98, "raw_text": effective_raw}
+
+        # Screen Understanding & Visual Explanation Patterns
+        if clean in [
+            "explain what is on this screen", "explain what is on my screen", "explain what's on this screen",
+            "explain what's on my screen", "explain this screen", "explain my screen", "what is on my screen",
+            "what is on this screen", "what's on my screen", "what's on this screen", "describe my screen",
+            "describe this screen", "read my screen", "read the screen", "analyze my screen", "analyze this screen",
+            "tell me what is on my screen", "tell me what is on this screen"
+        ]:
+            return {"intent": "screen.explain", "action": "explain", "target": "primary_screen", "query": clean, "confidence": 0.98, "raw_text": effective_raw}
+
+        if clean in ["what does this error mean", "what does that error mean", "explain this error", "explain that error", "explain the error"]:
+            return {"intent": "screen.explain", "action": "explain_error", "target": "error", "query": clean, "confidence": 0.98, "raw_text": effective_raw}
+
+        if clean in [
+            "explain the code visible in the editor", "explain the code visible in editor",
+            "explain the visible code", "explain the code on screen", "explain the code on my screen",
+            "explain the code in vs code", "explain the code in vscode"
+        ]:
+            return {"intent": "screen.explain", "action": "explain_code", "target": "code", "query": clean, "confidence": 0.98, "raw_text": effective_raw}
+
+        # Follow-up file saving to folder (e.g., "Save it in my DSA folder")
+        save_dest_m = re.match(r"^(?:save|move|put)\s+(?:it|this|that|the\s+file)\s+(?:in|into|to)\s+(?:my\s+|the\s+)?(.+?)(?:\s+folder)?$", clean, re.IGNORECASE)
+        if save_dest_m:
+            dest_name = save_dest_m.group(1).strip()
+            return {"intent": "file_management.create_file", "action": "save_file", "target": dest_name, "destination": dest_name, "confidence": 0.98, "query": clean, "raw_text": effective_raw}
+
+        # Wake acknowledgment when assistant name is addressed alone
+        if clean in ["santra", "samtra", "suntra", "jarvis", "hey santra", "hey samtra", "hey jarvis"]:
+            return {"intent": "status_request", "action": "wake_acknowledgment", "target": "assistant", "confidence": 0.99, "query": clean, "raw_text": effective_raw}
 
         # Workspace Launch and Listing Patterns
         if clean in ["list workspaces", "show workspaces", "available workspaces", "what workspaces do i have", "my workspaces"]:
@@ -1981,6 +2073,407 @@ class IntentEngine:
             "query": raw_text,
             "raw_text": raw_text
         }
+
+    def _parse_spotify_command(self, raw_text: str, clean: str, effective_raw: str) -> Optional[dict]:
+        """Parses natural-language Spotify commands for playback, playlists, and device management."""
+        import re
+
+        # Exclude OS-level app launching or closing commands
+        if re.match(r"^(?:open|launch|start|run|close|terminate|kill|switch to)\s+spotify\b", clean, re.IGNORECASE):
+            return None
+
+        # 1. Liked songs
+        if clean in ["play my liked songs", "play liked songs", "play my saved tracks", "play saved tracks", "play liked songs on spotify", "play my liked songs on spotify"]:
+            return {
+                "intent": "spotify_control",
+                "action": "play_liked",
+                "target": "liked_songs",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 2. Currently playing / Which song is playing?
+        current_playing_phrases = [
+            "which song is playing", "what song is playing", "what song is this",
+            "what's playing", "whats playing", "what is playing", "which track is playing",
+            "what track is playing", "which song is this", "what is currently playing",
+            "what song is currently playing", "current song", "currently playing",
+            "what's playing on spotify", "what is playing on spotify", "which song is playing on spotify",
+            "what track is this", "who is singing this song", "who is singing this", "song name"
+        ]
+        clean_no_q = clean.rstrip("?").strip()
+        if clean_no_q in current_playing_phrases or any(clean_no_q == p for p in current_playing_phrases):
+            return {
+                "intent": "spotify_control",
+                "action": "current_track",
+                "target": "player",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 3. Show / List playlists
+        list_playlist_phrases = [
+            "show my playlists", "show playlists", "list my playlists", "list playlists",
+            "show spotify playlists", "list spotify playlists", "what playlists do i have",
+            "what are my playlists", "view my playlists", "get my playlists", "display my playlists",
+            "my playlists", "spotify playlists"
+        ]
+        if clean_no_q in list_playlist_phrases or any(clean_no_q == p for p in list_playlist_phrases):
+            return {
+                "intent": "spotify_control",
+                "action": "list_playlists",
+                "target": "playlists",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 4. Device Transfer: "play this on my laptop", "play on my laptop", "transfer playback to laptop"
+        dev_match = re.match(r"^(?:play\s+this\s+on\s+(?:my\s+)?|play\s+on\s+(?:my\s+)?|transfer\s+(?:playback\s+)?to\s+(?:my\s+)?|switch\s+playback\s+to\s+(?:my\s+)?)(.+)$", clean_no_q, re.IGNORECASE)
+        if dev_match:
+            device_name = dev_match.group(1).strip()
+            if device_name not in ["youtube", "chrome", "google", "edge", "browser"]:
+                return {
+                    "intent": "spotify_control",
+                    "action": "transfer_device",
+                    "device_name": device_name,
+                    "target": device_name,
+                    "confidence": 0.98,
+                    "query": clean,
+                    "raw_text": raw_text
+                }
+
+        # 5. Playback controls on Spotify: "pause spotify", "resume spotify", "shuffle my current playlist"
+        if clean in ["pause spotify", "stop spotify"]:
+            return {
+                "intent": "spotify_control",
+                "action": "pause",
+                "target": "spotify",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+        if clean in ["resume spotify", "unpause spotify"]:
+            return {
+                "intent": "spotify_control",
+                "action": "resume",
+                "target": "spotify",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # Contextual "Now play it" / "Play it now" / "Play it"
+        if clean in ["now play it", "play it now", "play it", "play that playlist", "play this playlist"]:
+            return {
+                "intent": "spotify_control",
+                "action": "play_current_context",
+                "target": "active_playlist",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # Shuffle controls
+        if clean in ["shuffle my current playlist", "shuffle current playlist", "shuffle the playlist", "shuffle playlist", "turn on shuffle", "shuffle on", "enable shuffle"]:
+            return {
+                "intent": "spotify_control",
+                "action": "shuffle",
+                "state": True,
+                "target": "current_playlist",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+        if clean in ["turn off shuffle", "shuffle off", "disable shuffle"]:
+            return {
+                "intent": "spotify_control",
+                "action": "shuffle",
+                "state": False,
+                "target": "current_playlist",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 6. Create Playlist: "Create a playlist called Night Drive", "Create playlist Night Drive"
+        create_match = re.match(r"^(?:create|make|start|build)\s+(?:a\s+)?(?:new\s+)?playlist\s+(?:called|named)?\s*(.+)$", clean, re.IGNORECASE)
+        if create_match:
+            p_name = create_match.group(1).strip()
+            raw_match = re.match(r"^(?:create|make|start|build)\s+(?:a\s+)?(?:new\s+)?playlist\s+(?:called|named)?\s*(.+)$", effective_raw, re.IGNORECASE)
+            if raw_match:
+                p_name = raw_match.group(1).strip()
+            return {
+                "intent": "spotify_control",
+                "action": "create_playlist",
+                "playlist_name": p_name,
+                "target": p_name,
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 7. Rename Playlist: "Rename Night Drive to Midnight Vibes"
+        rename_match = re.match(r"^(?:rename|change\s+the\s+name\s+of)\s+(?:playlist\s+)?(.+?)\s+to\s+(.+)$", clean, re.IGNORECASE)
+        if rename_match:
+            old_name = rename_match.group(1).strip()
+            new_name = rename_match.group(2).strip()
+            raw_rename = re.match(r"^(?:rename|change\s+the\s+name\s+of)\s+(?:playlist\s+)?(.+?)\s+to\s+(.+)$", effective_raw, re.IGNORECASE)
+            if raw_rename:
+                old_name = raw_rename.group(1).strip()
+                new_name = raw_rename.group(2).strip()
+            return {
+                "intent": "spotify_control",
+                "action": "rename_playlist",
+                "playlist_name": old_name,
+                "new_name": new_name,
+                "target": old_name,
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 8. Delete / Remove Playlist: "Delete my old playlist", "Delete playlist Night Drive", "Remove playlist Night Drive"
+        delete_match = re.match(r"^(?:delete|remove|unfollow|destroy)\s+(?:my\s+)?(?:old\s+)?playlist\s*(?:called|named)?\s*(.*)$", clean, re.IGNORECASE)
+        if delete_match:
+            target_p = delete_match.group(1).strip()
+            raw_del = re.match(r"^(?:delete|remove|unfollow|destroy)\s+(?:my\s+)?(?:old\s+)?playlist\s*(?:called|named)?\s*(.*)$", effective_raw, re.IGNORECASE)
+            if raw_del and raw_del.group(1).strip():
+                target_p = raw_del.group(1).strip()
+            if not target_p:
+                target_p = "old playlist"
+            return {
+                "intent": "spotify_control",
+                "action": "delete_playlist",
+                "playlist_name": target_p,
+                "target": target_p,
+                "requires_confirmation": True,
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 9. Clean up duplicates: "clean up duplicates in Night Drive", "find duplicates in Night Drive", "find duplicates"
+        dup_match = re.match(r"^(?:clean\s*up|remove|find|check)\s+(?:for\s+)?duplicate(?:s|\s+tracks)?(?:\s+(?:in|from)\s+(?:playlist\s+)?(.+))?$", clean, re.IGNORECASE)
+        if dup_match:
+            p_name = dup_match.group(1).strip() if dup_match.group(1) else None
+            return {
+                "intent": "spotify_control",
+                "action": "cleanup_duplicates",
+                "playlist_name": p_name,
+                "target": p_name or "active_playlist",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        word_num_map = {
+            "first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3,
+            "fourth": 4, "4th": 4, "fifth": 5, "5th": 5, "sixth": 6, "6th": 6,
+            "seventh": 7, "7th": 7, "eighth": 8, "8th": 8, "ninth": 9, "9th": 9,
+            "tenth": 10, "10th": 10, "one": 1, "two": 2, "three": 3, "four": 4,
+            "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+            "a": 1, "an": 1
+        }
+
+        # 10. Reorder Track: "Move this song to the top", "Move the second song to the top", "Move track 3 to the top"
+        reorder_match = re.match(r"^move\s+(?:the\s+)?(this|first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|\d+)?(?:\s*(?:song|track|one))?\s+to\s+the\s+top$", clean, re.IGNORECASE)
+        if reorder_match:
+            ord_word = (reorder_match.group(1) or "this").lower()
+            idx = 1
+            if ord_word in word_num_map:
+                idx = word_num_map[ord_word]
+            elif ord_word.isdigit():
+                idx = int(ord_word)
+            return {
+                "intent": "spotify_control",
+                "action": "reorder_track",
+                "from_index": idx,
+                "to_index": 1,
+                "target": "active_playlist",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 11. Remove Track:
+        # e.g. "Remove the second song from Night Drive"
+        # e.g. "Remove the second one" / "Remove the 2nd song"
+        remove_match = re.match(r"^remove\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|\d+)\s*(?:song|track|one)?(?:\s+from\s+(?:playlist\s+)?(.+))?$", clean, re.IGNORECASE)
+        if remove_match:
+            ord_word = remove_match.group(1)
+            p_name = remove_match.group(2).strip() if remove_match.group(2) else None
+            idx = word_num_map.get(ord_word.lower()) if ord_word and ord_word.lower() in word_num_map else (int(ord_word) if ord_word and ord_word.isdigit() else 1)
+            return {
+                "intent": "spotify_control",
+                "action": "remove_track",
+                "index": idx,
+                "playlist_name": p_name,
+                "target": p_name or "active_playlist",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        remove_named_match = re.match(r"^remove\s+(?:track\s+|song\s+)?(.+?)\s+from\s+(?:playlist\s+)?(.+)$", clean, re.IGNORECASE)
+        if remove_named_match:
+            t_name = remove_named_match.group(1).strip()
+            p_name = remove_named_match.group(2).strip()
+            return {
+                "intent": "spotify_control",
+                "action": "remove_track",
+                "track_name": t_name,
+                "playlist_name": p_name,
+                "target": p_name,
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 12. Add tracks by artist / count: "Add five songs by The Weeknd", "Add 5 songs by The Weeknd"
+        artist_add_match = re.match(r"^add\s+(first|second|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+songs?\s+by\s+(.+?)(?:\s+to\s+(?:playlist\s+)?(.+))?$", clean, re.IGNORECASE)
+        if artist_add_match:
+            cnt_word = artist_add_match.group(1).lower()
+            count = word_num_map.get(cnt_word, int(cnt_word) if cnt_word.isdigit() else 1)
+            artist_name = artist_add_match.group(2).strip()
+            p_name = artist_add_match.group(3).strip() if artist_add_match.group(3) else None
+            raw_art = re.match(r"^add\s+.+?\s+songs?\s+by\s+(.+?)(?:\s+to\s+(?:playlist\s+)?(.+))?$", effective_raw, re.IGNORECASE)
+            if raw_art:
+                artist_name = raw_art.group(1).strip()
+                if raw_art.group(2):
+                    p_name = raw_art.group(2).strip()
+
+            return {
+                "intent": "spotify_control",
+                "action": "add_tracks_by_artist",
+                "count": count,
+                "artist": artist_name,
+                "query": artist_name,
+                "playlist_name": p_name,
+                "target": p_name or "active_playlist",
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 13. Add specific track to playlist: "Add Blinding Lights to Night Drive"
+        add_track_match = re.match(r"^add\s+(?:the\s+song\s+|track\s+|song\s+)?(.+?)\s+to\s+(?:playlist\s+)?(.+)$", clean, re.IGNORECASE)
+        if add_track_match:
+            t_name = add_track_match.group(1).strip()
+            p_name = add_track_match.group(2).strip()
+            raw_add = re.match(r"^add\s+(?:the\s+song\s+|track\s+|song\s+)?(.+?)\s+to\s+(?:playlist\s+)?(.+)$", effective_raw, re.IGNORECASE)
+            if raw_add:
+                t_name = raw_add.group(1).strip()
+                p_name = raw_add.group(2).strip()
+            return {
+                "intent": "spotify_control",
+                "action": "add_track",
+                "track_name": t_name,
+                "playlist_name": p_name,
+                "target": p_name,
+                "confidence": 0.98,
+                "query": clean,
+                "raw_text": raw_text
+            }
+
+        # 14. Play Playlist: "Play my workout playlist", "Play workout playlist", "Play playlist Night Drive"
+        play_p_match = re.match(r"^play\s+(?:my\s+)?(?:the\s+)?(?:playlist\s+(?:called\s+)?)?(.+?)(?:\s+playlist)?$", clean, re.IGNORECASE)
+        if play_p_match and not any(kw in clean for kw in ["on youtube", "youtube", "video", "browser", "chrome"]):
+            p_cand = play_p_match.group(1).strip()
+            if p_cand not in ["music", "song", "audio", "spotify", "it"]:
+                raw_p = re.match(r"^play\s+(?:my\s+)?(?:the\s+)?(?:playlist\s+(?:called\s+)?)?(.+?)(?:\s+playlist)?$", effective_raw, re.IGNORECASE)
+                if raw_p:
+                    p_cand = raw_p.group(1).strip()
+                return {
+                    "intent": "spotify_control",
+                    "action": "play_playlist",
+                    "playlist_name": p_cand,
+                    "target": p_cand,
+                    "confidence": 0.96,
+                    "query": clean,
+                    "raw_text": raw_text
+                }
+
+        return None
+
+    def _parse_panel_visibility_command(self, raw_text: str, clean: str, effective_raw: str) -> Optional[dict]:
+        """Parses voice and text commands for showing, hiding, minimizing, and restoring Santra HUD panel."""
+        import re
+
+        clean_clean = clean.lower().strip()
+        norm_raw = re.sub(r"[^\w\s]", "", effective_raw or "").lower().strip()
+        raw_clean = (effective_raw or "").lower().strip()
+
+        candidates = [t for t in (clean_clean, norm_raw, raw_clean) if t]
+
+        # 1. SHOW / OPEN / RESTORE COMMANDS
+        # "Open Santra panel.", "Show Santra.", "Show Santra dashboard.", "Restore Santra."
+        show_patterns = [
+            r"^(?:open|show|restore)\s+(?:the\s+)?santra\s+(?:panel|dashboard)\.?$",
+            r"^(?:open|show|restore)\s+santra\.?$",
+            r"^(?:open|show|restore)\s+(?:the\s+)?(?:dashboard|panel|hud)\.?$",
+            r"^(?:show|restore)\s+(?:the\s+)?(?:window|ui)\.?$",
+            r"^(?:bring\s+up|open\s+up)\s+(?:the\s+)?(?:santra|dashboard|panel)\.?$"
+        ]
+
+        for cand in candidates:
+            for pat in show_patterns:
+                if re.search(pat, cand, re.IGNORECASE):
+                    return {
+                        "intent": "panel_visibility",
+                        "action": "show_panel",
+                        "target": "santra_panel",
+                        "confidence": 1.0,
+                        "query": cand,
+                        "raw_text": effective_raw,
+                        "spoken": True
+                    }
+
+        # 2. HIDE / MINIMIZE COMMANDS
+        # "Hide Santra panel.", "Hide Santra.", "Minimize Santra.", "Hide Santra dashboard."
+        hide_patterns = [
+            r"^(?:hide|minimize)\s+(?:the\s+)?santra\s+(?:panel|dashboard)\.?$",
+            r"^(?:hide|minimize)\s+santra\.?$",
+            r"^(?:hide|minimize)\s+(?:the\s+)?(?:dashboard|panel|hud)\.?$",
+            r"^(?:hide|minimize)\s+(?:the\s+)?(?:window|ui)\.?$",
+            r"^(?:send\s+to\s+tray|minimize\s+to\s+tray)\.?$"
+        ]
+
+        for cand in candidates:
+            for pat in hide_patterns:
+                if re.search(pat, cand, re.IGNORECASE):
+                    return {
+                        "intent": "panel_visibility",
+                        "action": "hide_panel",
+                        "target": "santra_panel",
+                        "confidence": 1.0,
+                        "query": cand,
+                        "raw_text": effective_raw,
+                        "spoken": True
+                    }
+
+        # 3. EXPLICIT EXIT / SHUTDOWN COMMANDS
+        # "Exit Santra", "Shut down Santra", "Quit Santra"
+        exit_patterns = [
+            r"^(?:exit|shut\s*down|quit|kill)\s+santra\.?$",
+            r"^(?:shut\s*down|exit|quit)\s+(?:the\s+)?assistant\.?$"
+        ]
+        for cand in candidates:
+            for pat in exit_patterns:
+                if re.search(pat, cand, re.IGNORECASE):
+                    return {
+                        "intent": "panel_visibility",
+                        "action": "exit_assistant",
+                        "target": "santra",
+                        "confidence": 1.0,
+                        "query": cand,
+                        "raw_text": effective_raw,
+                        "spoken": True
+                    }
+
+        return None
 
     def classify_intent(self, text: str) -> tuple:
         """Helper method returning (intent, target) tuple for concise evaluation."""

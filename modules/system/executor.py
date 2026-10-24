@@ -30,6 +30,7 @@ class CommandExecutor:
         self.content_gen = ContentGenerator(filesystem_mgr=self.filesystem_mgr)
         self.last_created_file = None
         self.last_search_results = []
+        self.panel_visibility_cb = None
         logger.info("Command Executor initialized with Full OS Control Layer.")
 
     def execute(self, intent_node: dict, confirm: bool = False) -> dict:
@@ -76,6 +77,41 @@ class CommandExecutor:
         # 2. Risk and Permission Level Check
         risk_level = permissions.get_action_risk_level(intent, action)
         logger.info(f"Action safety classification: {risk_level}")
+
+        # Dedicated conversational handling for Spotify operations (explains unfollow vs permanent delete)
+        if intent == "spotify_control":
+            result = self._execute_spotify_control(intent_node, confirm=confirm)
+            self._record_history(intent_node, result)
+            return result
+
+        # Dedicated handling for Panel Visibility (Show / Hide / Minimize / Restore Santra)
+        if intent == "panel_visibility":
+            act = action or "show_panel"
+            if self.panel_visibility_cb:
+                try:
+                    self.panel_visibility_cb(act)
+                except Exception as cb_err:
+                    logger.error(f"Error in panel visibility callback: {cb_err}")
+
+            if act in ["show_panel", "show", "restore"]:
+                msg = "Opening Santra dashboard, Sir."
+            elif act in ["hide_panel", "hide", "minimize"]:
+                msg = "Santra panel hidden to system tray."
+            elif act in ["exit_assistant", "exit", "quit", "shutdown"]:
+                msg = "Shutting down Santra. Goodbye, Sir."
+            else:
+                msg = f"Panel visibility set to {act}."
+
+            result = {
+                "success": True,
+                "outcome": CommandOutcome.SUCCESS.value,
+                "message": msg,
+                "intent": intent,
+                "action": act,
+                "spoken": True
+            }
+            self._record_history(intent_node, result)
+            return result
 
         if risk_level == permissions.RiskLevel.HIGH and not confirm:
             logger.info("High-risk action blocked. Awaiting user confirmation.")
@@ -146,13 +182,27 @@ class CommandExecutor:
                 success = bool(res.get("success", False))
                 message = res.get("message", "")
                 if res.get("requires_clarification"):
+                    pending_data = {
+                        "original_request": intent_node.get("raw") or intent_node.get("raw_text", ""),
+                        "intent": "browser_action",
+                        "action": b_intent.action_type.value,
+                        "target": b_intent.site_name or b_intent.domain or b_intent.search_query,
+                        "target_url": b_intent.url,
+                        "target_domain": b_intent.domain,
+                        "browser": b_intent.target_browser or "chrome",
+                        "search_query": b_intent.search_query,
+                        "clarification_prompt": message,
+                        "clarification_type": "browser_selection" if "browser" in message.lower() else "destination_selection",
+                        "valid_options": ["chrome", "firefox", "edge", "brave", "yes", "no", "cancel"]
+                    }
                     result = {
                         "success": True,
                         "outcome": CommandOutcome.SUCCESS.value,
                         "message": message,
                         "intent": intent,
                         "requires_clarification": True,
-                        "clarification_prompt": message
+                        "clarification_prompt": message,
+                        "pending_intent": pending_data
                     }
                     self._record_history(intent_node, result)
                     return result
@@ -324,6 +374,15 @@ class CommandExecutor:
                     logger.error(f"Media key error: {m_err}")
                     success = False
                     message = "Failed to send media control command."
+
+            elif intent == "spotify_control":
+                res = self._execute_spotify_control(intent_node, confirm=confirm)
+                if res.get("pending_confirmation"):
+                    self._record_history(intent_node, res)
+                    return res
+                success = bool(res.get("success", False))
+                message = res.get("message", "")
+                outcome = res.get("outcome", CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED)
 
             elif intent in ["test_speech", "test_speakers"]:
                 from core.tts.tts_manager import TTSManager
@@ -552,24 +611,48 @@ class CommandExecutor:
             # ---------------------------------------------------------
             elif intent in ["files.create", "file_management.create_file", "file_creation"]:
                 from core.files.file_creator import file_creator
-                fn = intent_node.get("filename") or "script.py"
-                dest = intent_node.get("destination") or "Desktop"
-                content = intent_node.get("content") or intent_node.get("text") or "# Created by JARVIS\n"
-                lang = intent_node.get("language")
-                allow_ow = bool(confirm or intent_node.get("allow_overwrite", False))
-                res_fc = file_creator.create_file(filename=fn, destination=dest, content=content, language=lang, allow_overwrite=allow_ow)
-                if res_fc.requires_confirmation:
-                    return {
-                        "success": False,
-                        "outcome": CommandOutcome.PERMISSION_DENIED.value,
-                        "message": res_fc.message,
-                        "intent": intent,
-                        "pending_confirmation": True,
-                        "pending_intent": intent_node
-                    }
-                success = res_fc.success
-                message = res_fc.message
-                outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
+                action_k = intent_node.get("action", "")
+
+                # Handle follow-up save to folder (e.g. "Save it in my DSA folder")
+                if action_k == "save_file" and hasattr(self, "last_created_file") and self.last_created_file:
+                    dest_f = intent_node.get("destination") or target or "DSA"
+                    import shutil
+                    from pathlib import Path
+                    src_p = Path(self.last_created_file)
+                    dest_dir = Path.home() / "Desktop" / dest_f if not Path(dest_f).is_absolute() else Path(dest_f)
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    target_f = dest_dir / src_p.name
+                    try:
+                        shutil.copy2(str(src_p), str(target_f))
+                        self.last_created_file = str(target_f)
+                        success = True
+                        message = f"Saved '{src_p.name}' in {dest_f} folder."
+                        outcome = CommandOutcome.SUCCESS
+                    except Exception as fe:
+                        success = False
+                        message = f"Could not move file to {dest_f}: {fe}"
+                        outcome = CommandOutcome.EXECUTION_FAILED
+                else:
+                    fn = intent_node.get("filename") or "script.py"
+                    dest = intent_node.get("destination") or "Desktop"
+                    content = intent_node.get("content") or intent_node.get("text") or "# Created by JARVIS\n"
+                    lang = intent_node.get("language")
+                    allow_ow = bool(confirm or intent_node.get("allow_overwrite", False))
+                    res_fc = file_creator.create_file(filename=fn, destination=dest, content=content, language=lang, allow_overwrite=allow_ow)
+                    if res_fc.requires_confirmation:
+                        return {
+                            "success": False,
+                            "outcome": CommandOutcome.PERMISSION_DENIED.value,
+                            "message": res_fc.message,
+                            "intent": intent,
+                            "pending_confirmation": True,
+                            "pending_intent": intent_node
+                        }
+                    success = res_fc.success
+                    message = res_fc.message
+                    if success and getattr(res_fc, "file_path", None):
+                        self.last_created_file = res_fc.file_path
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
 
             elif intent in ["files.search", "file_management.search", "file_search"]:
                 from core.files.file_memory import file_memory_manager
@@ -912,11 +995,32 @@ class CommandExecutor:
                 success, message = self._handle_browser_control(action, target, intent_node)
 
             elif intent == "browser_action":
-                if action in ["read_page", "inspect_page"]:
-                    res = self.browser_mgr.inspect_page()
+                if action in ["read_page", "inspect_page", "analyze_page"]:
+                    res = self.browser_mgr.analyze_active_page()
                     success = res.get("success", False)
-                    message = res.get("message") or ("Page inspected successfully." if success else "DOM inspection requires Chrome DevTools Protocol (CDP). Launch Chrome with '--remote-debugging-port=9222' on localhost to enable page reading.")
-                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.UNSUPPORTED_CAPABILITY
+                    if success:
+                        title = res.get("title") or "Current Page"
+                        url = res.get("url") or ""
+                        content = res.get("content") or ""
+                        headings = res.get("headings") or []
+                        head_text = f" Key sections: {', '.join(headings[:3])}." if headings else ""
+                        if content:
+                            snippet = content[:280].strip()
+                            if len(content) > 280:
+                                snippet += "..."
+                            message = f"Active page is '{title}' ({url}).{head_text} Summary: {snippet}"
+                        else:
+                            message = f"Active page is '{title}' ({url})."
+                        outcome = CommandOutcome.SUCCESS
+                    else:
+                        message = res.get("message") or "Unable to read active browser page."
+                        outcome = CommandOutcome.UNSUPPORTED_CAPABILITY
+                elif action in ["search_page", "search_website", "find_in_page"]:
+                    query = intent_node.get("query") or intent_node.get("target") or ""
+                    res = self.browser_mgr.search_active_page(query)
+                    success = res.get("success", False)
+                    message = res.get("message", f"Searched for '{query}'.")
+                    outcome = CommandOutcome.SUCCESS if success else CommandOutcome.EXECUTION_FAILED
                 else:
                     success = False
                     message = f"Unknown browser action: {action}"
@@ -1361,6 +1465,287 @@ class CommandExecutor:
             return res.get("success", False), res.get("message", "Opened websites.")
         else:
             return False, f"Unknown browser control action: {action}"
+
+    def _execute_spotify_control(self, intent_node: dict, confirm: bool = False) -> dict:
+        """Executes Spotify Web API operations with multi-turn context and safe destructive confirmation."""
+        from modules.spotify import spotify_service, spotify_context
+        from modules.spotify.client import SpotifyApiError, SpotifyPremiumRequiredError, SpotifyNoActiveDeviceError
+
+        action = intent_node.get("action", "")
+        target = intent_node.get("target", "")
+
+        # Check connection status
+        if not spotify_service.is_connected():
+            return {
+                "success": False,
+                "outcome": CommandOutcome.EXECUTION_FAILED.value,
+                "message": "Spotify is not connected. Please connect your Spotify account in Santra settings or click the Spotify button.",
+                "intent": "spotify_control",
+                "action": action
+            }
+
+        try:
+            # 1. Play Liked Songs
+            if action == "play_liked":
+                res = spotify_service.play_liked_songs()
+                return {"success": res.get("success", False), "message": res.get("message", "Playing liked songs on Spotify."), "action": action}
+
+            # 2. Create Playlist
+            elif action == "create_playlist":
+                p_name = intent_node.get("playlist_name") or target or "New Playlist"
+                p = spotify_service.create_playlist(p_name)
+                return {"success": True, "message": f"{p.name} was created.", "action": action, "playlist_id": p.id}
+
+            # 3. Add Specific Track to Playlist
+            elif action == "add_track":
+                t_name = intent_node.get("track_name") or target
+                p_name = intent_node.get("playlist_name")
+                res = spotify_service.add_tracks_by_search(playlist_name_or_id=p_name, query=t_name)
+                return {"success": res.get("success", False), "message": res.get("message", ""), "action": action}
+
+            # 4. Add N Songs by Artist
+            elif action == "add_tracks_by_artist":
+                count = intent_node.get("count", 1)
+                artist = intent_node.get("artist") or target
+                p_name = intent_node.get("playlist_name")
+                res = spotify_service.add_tracks_by_search(playlist_name_or_id=p_name, query=artist, artist=artist, count=count)
+                return {"success": res.get("success", False), "message": res.get("message", ""), "action": action}
+
+            # 5. Remove Track
+            elif action == "remove_track":
+                p_name = intent_node.get("playlist_name")
+                idx = intent_node.get("index")
+                t_name = intent_node.get("track_name")
+
+                target_p_id = None
+                target_p_name = ""
+                if p_name:
+                    p = spotify_service.find_playlist_by_name(p_name)
+                    if p:
+                        target_p_id = p.id
+                        target_p_name = p.name
+                    else:
+                        target_p_id = p_name
+                        target_p_name = p_name
+                elif spotify_context.active_playlist_id:
+                    target_p_id = spotify_context.active_playlist_id
+                    target_p_name = spotify_context.active_playlist_name or "active playlist"
+                else:
+                    return {"success": False, "message": "Which playlist would you like me to remove the song from?"}
+
+                tracks = spotify_service.get_playlist_tracks(target_p_id)
+                if not tracks:
+                    return {"success": False, "message": f"Playlist '{target_p_name}' has no songs to remove."}
+
+                if idx is not None:
+                    pos = idx - 1
+                    if 0 <= pos < len(tracks):
+                        target_track = tracks[pos]
+                        res = spotify_service.remove_tracks_from_playlist(target_p_id, positions=[pos])
+                        return {"success": True, "message": f"Removed '{target_track.name}' by {target_track.artist} from {target_p_name}."}
+                    else:
+                        return {"success": False, "message": f"There is no song number {idx} in {target_p_name}. It only has {len(tracks)} songs."}
+                elif t_name:
+                    found_track = None
+                    pos = -1
+                    for i, t in enumerate(tracks):
+                        if t_name.lower() in t.name.lower():
+                            found_track = t
+                            pos = i
+                            break
+                    if found_track and pos >= 0:
+                        res = spotify_service.remove_tracks_from_playlist(target_p_id, positions=[pos])
+                        return {"success": True, "message": f"Removed '{found_track.name}' by {found_track.artist} from {target_p_name}."}
+                    else:
+                        return {"success": False, "message": f"Could not find song '{t_name}' in {target_p_name}."}
+                else:
+                    return {"success": False, "message": "Which song would you like to remove?"}
+
+            # 6. Reorder Track: Move to top
+            elif action == "reorder_track":
+                from_idx = intent_node.get("from_index", 1)
+                to_idx = intent_node.get("to_index", 1)
+                p_name = intent_node.get("playlist_name")
+                target_p_id = None
+                target_p_name = ""
+                if p_name:
+                    p = spotify_service.find_playlist_by_name(p_name)
+                    if p:
+                        target_p_id = p.id
+                        target_p_name = p.name
+                elif spotify_context.active_playlist_id:
+                    target_p_id = spotify_context.active_playlist_id
+                    target_p_name = spotify_context.active_playlist_name or "active playlist"
+
+                if not target_p_id:
+                    return {"success": False, "message": "Which playlist would you like to reorder?"}
+
+                tracks = spotify_service.get_playlist_tracks(target_p_id)
+                if not tracks:
+                    return {"success": False, "message": f"Playlist '{target_p_name}' has no tracks to move."}
+
+                range_start = max(0, min(from_idx - 1, len(tracks) - 1))
+                insert_before = max(0, min(to_idx - 1, len(tracks)))
+                moved_track = tracks[range_start]
+                res = spotify_service.reorder_playlist_tracks(target_p_id, range_start=range_start, insert_before=insert_before)
+                return {"success": True, "message": f"Moved '{moved_track.name}' to the top of {target_p_name}."}
+
+            # 7. Rename Playlist
+            elif action == "rename_playlist":
+                old_name = intent_node.get("playlist_name") or target
+                new_name = intent_node.get("new_name")
+                if not new_name:
+                    return {"success": False, "message": f"What new name would you like for {old_name}?"}
+                p = spotify_service.find_playlist_by_name(old_name)
+                if not p:
+                    return {"success": False, "message": f"I couldn't find a playlist named '{old_name}' in your library."}
+                res = spotify_service.rename_playlist(p.id, new_name)
+                return {"success": True, "message": f"Renamed playlist '{old_name}' to '{new_name}'."}
+
+            # 8. Delete / Unfollow Playlist (Destructive - Requires Confirmation)
+            elif action == "delete_playlist":
+                p_name = intent_node.get("playlist_name") or target
+                p = spotify_service.find_playlist_by_name(p_name) if p_name else None
+                if not p and spotify_context.active_playlist_id:
+                    try:
+                        p = spotify_service.get_playlist(spotify_context.active_playlist_id)
+                    except Exception:
+                        pass
+
+                if not p:
+                    return {"success": False, "message": f"I couldn't find the playlist '{p_name or 'requested'}' in your Spotify library."}
+
+                if not confirm:
+                    explanation_msg = (
+                        f"Are you sure you want to remove the playlist '{p.name}'? "
+                        "Spotify's Web API will unfollow and remove it from your library; "
+                        "it cannot be permanently deleted from Spotify's servers."
+                    )
+                    return {
+                        "success": False,
+                        "outcome": CommandOutcome.PERMISSION_DENIED.value,
+                        "message": explanation_msg,
+                        "intent": "spotify_control",
+                        "action": "delete_playlist",
+                        "target": p.name,
+                        "is_conversational_confirmation": True,
+                        "pending_confirmation": True,
+                        "metadata": {
+                            "playlist_id": p.id,
+                            "playlist_name": p.name,
+                            "action": "delete_playlist"
+                        }
+                    }
+
+                p_id = intent_node.get("playlist_id") or intent_node.get("metadata", {}).get("playlist_id") or p.id
+                res = spotify_service.unfollow_playlist(p_id)
+                return {"success": True, "message": res.get("message", f"Playlist '{p.name}' removed from your library.")}
+
+            # 9. Clean up Duplicates
+            elif action == "cleanup_duplicates":
+                p_name = intent_node.get("playlist_name")
+                target_p_id = None
+                target_p_name = ""
+                if p_name:
+                    p = spotify_service.find_playlist_by_name(p_name)
+                    if p:
+                        target_p_id = p.id
+                        target_p_name = p.name
+                elif spotify_context.active_playlist_id:
+                    target_p_id = spotify_context.active_playlist_id
+                    target_p_name = spotify_context.active_playlist_name or "active playlist"
+
+                if not target_p_id:
+                    return {"success": False, "message": "Which playlist would you like me to check for duplicates?"}
+
+                res = spotify_service.cleanup_duplicates(target_p_id)
+                return {"success": True, "message": res.get("message", "Cleaned up duplicate songs.")}
+
+            # 10. Play Playlist
+            elif action == "play_playlist":
+                p_name = intent_node.get("playlist_name") or target
+                res = spotify_service.play_playlist(p_name)
+                return {"success": res.get("success", False), "message": res.get("message", f"Playing {p_name} on Spotify.")}
+
+            # 11. Play Active Context
+            elif action == "play_current_context":
+                if spotify_context.active_playlist_id:
+                    res = spotify_service.play(context_uri=f"spotify:playlist:{spotify_context.active_playlist_id}")
+                    return {"success": res.get("success", False), "message": res.get("message", f"Playing {spotify_context.active_playlist_name or 'playlist'} on Spotify.")}
+                else:
+                    res = spotify_service.play()
+                    return {"success": res.get("success", False), "message": res.get("message", "Resumed playback on Spotify.")}
+
+            # 12. Currently Playing Track
+            elif action == "current_track":
+                state = spotify_service.get_current_playback()
+                if state and state.item:
+                    dev_name = state.device.name if state.device else "Spotify"
+                    msg = f"Currently playing '{state.item.name}' by {state.item.artist} on {dev_name}."
+                    return {"success": True, "message": msg}
+                else:
+                    return {"success": True, "message": "Nothing is currently playing on Spotify."}
+
+            # 13. List Playlists
+            elif action == "list_playlists":
+                playlists = spotify_service.list_playlists(limit=10)
+                if playlists:
+                    names = ", ".join(f"'{p.name}'" for p in playlists[:6])
+                    more = f" and {len(playlists) - 6} more" if len(playlists) > 6 else ""
+                    return {"success": True, "message": f"You have {len(playlists)} playlists on Spotify: {names}{more}."}
+                else:
+                    return {"success": True, "message": "You don't have any playlists in your Spotify library."}
+
+            # 14. Playback Controls
+            elif action == "pause":
+                res = spotify_service.pause()
+                return {"success": res.get("success", False), "message": res.get("message", "Spotify paused.")}
+
+            elif action in ["resume", "play"]:
+                res = spotify_service.play()
+                return {"success": res.get("success", False), "message": res.get("message", "Spotify playing.")}
+
+            elif action == "next_track":
+                res = spotify_service.next_track()
+                return {"success": res.get("success", False), "message": res.get("message", "Skipped to next track.")}
+
+            elif action == "previous_track":
+                res = spotify_service.previous_track()
+                return {"success": res.get("success", False), "message": res.get("message", "Returned to previous track.")}
+
+            elif action == "shuffle":
+                st = intent_node.get("state", True)
+                res = spotify_service.set_shuffle(st)
+                return {"success": res.get("success", False), "message": res.get("message", f"Shuffle turned {'on' if st else 'off'}.")}
+
+            elif action == "transfer_device":
+                dev_name = intent_node.get("device_name") or target
+                res = spotify_service.transfer_playback(dev_name)
+                return {"success": res.get("success", False), "message": res.get("message", f"Transferred playback to {dev_name}.")}
+
+            elif action == "volume":
+                vol = intent_node.get("volume", 50)
+                res = spotify_service.set_volume(vol)
+                return {"success": res.get("success", False), "message": res.get("message", f"Set volume to {vol}%.")}
+
+            else:
+                return {"success": False, "message": f"Unknown Spotify command action: {action}"}
+
+        except SpotifyPremiumRequiredError:
+            return {
+                "success": False,
+                "message": "Spotify Web API player commands require a Spotify Premium subscription. Local media keys can control playback when Spotify Desktop is running."
+            }
+        except SpotifyNoActiveDeviceError:
+            return {
+                "success": False,
+                "message": "No active Spotify playback device detected. Please open Spotify on your PC or phone."
+            }
+        except SpotifyApiError as e:
+            return {"success": False, "message": f"Spotify API error: {e}"}
+        except Exception as ex:
+            logger.error(f"Unexpected error executing Spotify command: {ex}", exc_info=True)
+            return {"success": False, "message": f"Failed to execute Spotify command: {ex}"}
 
     def _record_history(self, intent_node: dict, result: dict):
         if self.history_tracker:

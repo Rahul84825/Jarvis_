@@ -76,6 +76,8 @@ class VirtualLabController:
 
         return self._execute_scenario_batch(scenarios, mode=mode, on_progress=on_progress)
 
+    re_run_failed = run_failed_scenarios
+
     def run_single(self, scenario_id: str, mode: Optional[ExecutionMode] = None) -> Optional[ScenarioResult]:
         """Executes a single test scenario by ID."""
         scenario = ScenarioLibrary.get_by_id(scenario_id)

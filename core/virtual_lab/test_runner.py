@@ -53,8 +53,10 @@ class CommandTestRunner:
             if self.mode == ExecutionMode.SIMULATION:
                 tool_outcome = self._dispatch_simulation_tools(parsed_intent, adapters, scenario)
             else:
-                # Controlled Integration Mode: strictly reversable real components
-                tool_outcome = {"tool": "controlled_integration", "message": "Executed in controlled integration mode."}
+                # Controlled Integration Mode: routes safe actions through simulation adapters
+                # to guarantee zero modification to physical OS files, real browser sessions, or active windows
+                tool_outcome = self._dispatch_simulation_tools(parsed_intent, adapters, scenario)
+                tool_outcome["mode"] = self.mode.value
 
             tool_outcome["timestamp"] = timestamp_str
 
@@ -78,6 +80,7 @@ class CommandTestRunner:
             duration_ms = (time.perf_counter() - t0) * 1000
             logger.error(f"[TestRunner] Unhandled exception executing '{scenario.scenario_id}': {e}", exc_info=True)
             from core.virtual_lab.models import FailureCategory
+            test_method_name = f"test_scenario_{scenario.scenario_id.replace('-', '_')}"
             return ScenarioResult(
                 scenario_id=scenario.scenario_id,
                 command=scenario.command,
@@ -87,7 +90,7 @@ class CommandTestRunner:
                 timestamp=timestamp_str,
                 failure_category=FailureCategory.TEST_INFRASTRUCTURE,
                 failure_reason=f"Unhandled exception during execution: {str(e)}",
-                reproduction_instructions=f"python -m unittest tests.test_virtual_lab -k {scenario.scenario_id}"
+                reproduction_instructions=f"python -m unittest tests.test_virtual_lab -k {test_method_name}"
             )
         finally:
             if not env:
@@ -114,19 +117,31 @@ class CommandTestRunner:
         """Routes parsed intent to appropriate mock tool adapter."""
         intent = parsed_intent.get("intent", "")
         action = parsed_intent.get("action", parsed_intent.get("action_type", ""))
-        target = parsed_intent.get("target", parsed_intent.get("query", parsed_intent.get("app_name", "")))
+        target = parsed_intent.get("target") or parsed_intent.get("filename") or parsed_intent.get("query") or parsed_intent.get("app_name", "")
 
         if target in ["file", "folder", "directory", None, ""]:
-            import re
-            m_name = re.search(r"(?:called|named)\s+([a-zA-Z0-9_\-\.]+)", scenario.command, re.IGNORECASE)
-            if m_name:
-                fname = m_name.group(1).strip()
-                if "desktop" in scenario.command.lower():
+            fname = parsed_intent.get("filename")
+            dest = parsed_intent.get("destination")
+            if not fname:
+                import re
+                m_name = re.search(r"(?:called|named)\s+([a-zA-Z0-9_\-\.]+)", scenario.command, re.IGNORECASE)
+                if not m_name:
+                    m_name = re.search(r"\b([a-zA-Z0-9_\-]+\.(?:py|cpp|cc|c|h|java|js|ts|html|css|sql|md|txt|json))\b", scenario.command, re.IGNORECASE)
+                if m_name:
+                    fname = m_name.group(1).strip()
+
+            if fname:
+                cmd_low = scenario.command.lower()
+                if dest:
+                    target = f"{dest}/{fname}"
+                elif "desktop" in cmd_low:
                     target = f"Desktop/{fname}"
-                elif "document" in scenario.command.lower():
+                elif "document" in cmd_low:
                     target = f"Documents/{fname}"
-                elif "download" in scenario.command.lower():
+                elif "download" in cmd_low:
                     target = f"Downloads/{fname}"
+                elif "dsa" in cmd_low:
+                    target = f"dsa/{fname}"
                 else:
                     target = fname
 

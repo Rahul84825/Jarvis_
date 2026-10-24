@@ -66,7 +66,12 @@ class BrowserSessionManager:
         return self._state
 
     def _sync_live_tab(self):
-        """Attempts fast query of CDP to synchronize active tab and URL."""
+        """Attempts fast query of CDP to synchronize active tab and URL with 2.0s debounce."""
+        now = time.time()
+        if (now - getattr(self, "_last_sync_time", 0.0)) < 2.0:
+            return
+        self._last_sync_time = now
+
         if self._cdp.is_available():
             active = self._cdp.get_active_tab()
             if active:

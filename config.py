@@ -45,6 +45,15 @@ class Config:
         self.wakeword_sensitivity = 0.5
         self.porcupine_api_key = ""         # Picovoice Porcupine API Key
         self.openwakeword_model_path = ""   # Custom model path (optional)
+
+        # Pronunciation & Wake-Word Intelligence Settings
+        self.pronunciation_variants = [
+            "santra", "samtra", "suntra", "sumtra", "santhra", "san tra", "san-tra", "sandra", "santram", "shantra"
+        ]
+        self.wakeword_verification_mode = "two_stage"  # Options: "two_stage", "direct", "strict"
+        self.stt_vocabulary_biasing = True
+        self.wakeword_debounce_sec = 1.5
+        self.wakeword_min_confidence = 0.45
         
         # Audio Settings
         self.audio_sample_rate = 16000
@@ -56,6 +65,8 @@ class Config:
         self.vad_threshold = 0.015         # VAD energy threshold (float 0.0 to 1.0)
         self.silence_duration = 0.8        # Seconds of silence to wait before finalizing speech (fast 800ms response)
         self.max_duration = 5.0            # Max recording duration cap in seconds
+        self.enable_wake_chime = True      # Enable acoustic earcon chime acknowledging wake word
+        self.wake_chime_volume = 1.0       # Volume scalar for wake chime
         
         # UI Settings
         self.ui_title = "SANTRA v1.1 - AI Desktop Assistant"
@@ -96,10 +107,15 @@ class Config:
         self.nvidia_timeout_sec = 25.0
         self.nvidia_max_retries = 3
         
-        # Whisper model size, beam size, and device
+        # Whisper model size, beam size, device, and acceleration
         self.whisper_model_size = "base"
         self.whisper_beam_size = 1
-        self.whisper_device = "cpu"
+        self.whisper_device = "auto"  # Options: "auto", "cuda", "cpu"
+        self.whisper_compute_type = "auto"  # Options: "auto", "float16", "int8_float16", "int8"
+        self.model_idle_timeout_sec = 600.0  # Seconds before unloading idle heavy model (0 to disable)
+        self.telemetry_refresh_interval_ms = 2000  # HUD telemetry panel poll interval in ms
+        self.enable_gpu_telemetry = True
+        self.start_minimized = True
         
         # TTS voice, rate, pitch, volume, provider, cloud timeout, and cache
         self.tts_provider = "edge"  # Options: "edge", "sapi", "windows", "pyttsx3", "gtts"

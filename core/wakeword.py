@@ -444,16 +444,20 @@ class PorcupineWakeWordDetector(WakeWordDetector):
 
 
 
+from core.pronunciation_manager import pronunciation_manager
+
 class SantraWakeWordDetector(WakeWordDetector):
     """Native, lightweight, local wake-word detector for 'Santra'.
     Uses energy/VAD-gated streaming audio frames and fast local Faster-Whisper
-    acoustic keyword spotting without cloud dependencies or unbounded audio loops.
+    acoustic keyword spotting with Indian English pronunciation adaptation,
+    without cloud dependencies or unbounded audio loops.
     """
 
     def __init__(self, wake_words=None, sensitivity=None, **kwargs):
-        self.wake_words = [w.lower() for w in (wake_words or ["santra", "hey santra", "hello santra", "hi santra", "wake up"])]
+        self.pronunciation_mgr = pronunciation_manager
+        self.wake_words = [w.lower() for w in (wake_words or ["santra", "hey santra", "hello santra", "hi santra", "wake up", "jarvis", "hey jarvis"])]
         # Accept phonetic variations that Whisper might transcribe for "Santra"
-        self.phonetic_variants = ["santra", "sandra", "santa", "santhra", "samtra", "santana", "santram", "shantra"]
+        self.phonetic_variants = list(self.pronunciation_mgr.variants)
         self.sensitivity = sensitivity if sensitivity is not None else getattr(config, "wakeword_sensitivity", 0.45)
         self._running = False
         self._callback = None
@@ -472,8 +476,20 @@ class SantraWakeWordDetector(WakeWordDetector):
         self._whisper_model = None
         self._model_lock = threading.Lock()
 
+    def set_shared_model(self, model):
+        """Allows sharing an already initialized Faster-Whisper model to conserve memory/CPU."""
+        with self._model_lock:
+            self._whisper_model = model
+            logger.info("[SANTRA_WAKE] Shared Faster-Whisper model registered.")
+
     def _get_model(self):
         with self._model_lock:
+            if self._whisper_model is None and hasattr(self, "_get_shared_model_fn") and callable(self._get_shared_model_fn):
+                shared = self._get_shared_model_fn()
+                if shared is not None:
+                    self._whisper_model = shared
+                    return self._whisper_model
+
             if self._whisper_model is None:
                 try:
                     from faster_whisper import WhisperModel
@@ -542,7 +558,12 @@ class SantraWakeWordDetector(WakeWordDetector):
         stream = None
         reconnect_delay = 1.0
         # Energy threshold based on sensitivity (higher sensitivity = lower threshold)
-        rms_threshold = max(200.0, (1.0 - self.sensitivity) * 800.0)
+        rms_threshold = max(180.0, (1.0 - self.sensitivity) * 750.0)
+
+        # 1.8 seconds max buffer at 16kHz 16-bit mono = 57,600 bytes
+        MAX_BUFFER_BYTES = 57600
+        # 0.4 seconds min buffer = 12,800 bytes (min 3 frames)
+        MIN_SPEECH_FRAMES = 3
 
         while self._running:
             is_externally_fed = self._external_feed_active and (time.time() - self._last_external_feed_time < 3.0)
@@ -624,36 +645,57 @@ class SantraWakeWordDetector(WakeWordDetector):
                 else:
                     if self._speech_frames > 0:
                         self._silence_frames += 1
-                        # If silence follows speech (approx 200ms) or buffer exceeds 1.8s
-                        if self._silence_frames >= 4 or len(self._speech_buffer) >= 28800:
-                            if self._speech_frames >= 3:
+                        # If silence follows speech (3 frames approx 240ms) or buffer reaches max window
+                        if self._silence_frames >= 3 or len(self._speech_buffer) >= MAX_BUFFER_BYTES:
+                            # Safely extract speech burst as immutable bytes and reset buffer immediately
+                            raw_burst = bytes(self._speech_buffer)
+                            burst_frames = self._speech_frames
+                            self._speech_buffer = bytearray()
+                            self._speech_frames = 0
+                            self._silence_frames = 0
+
+                            if burst_frames >= MIN_SPEECH_FRAMES and len(raw_burst) >= (MIN_SPEECH_FRAMES * 2560):
                                 # Run local acoustic keyword verification
                                 model = self._get_model()
                                 if model is not None:
-                                    audio_int16 = np.frombuffer(self._speech_buffer, dtype=np.int16)
-                                    audio_float = audio_int16.astype(np.float32) / 32768.0
                                     try:
-                                        segments, _ = model.transcribe(
+                                        audio_int16 = np.frombuffer(raw_burst, dtype=np.int16)
+                                        audio_float = audio_int16.astype(np.float32) / 32768.0
+                                        # Force language='en' to prevent Hindi/Marathi Devanagari hallucination ('संतरा')
+                                        segments, info = model.transcribe(
                                             audio_float,
                                             beam_size=1,
                                             temperature=0.0,
-                                            initial_prompt="Santra, Hey Santra, Jarvis"
+                                            language="en",
+                                            initial_prompt="Santra, Hey Santra, Samtra, Suntra, Jarvis."
                                         )
-                                        transcript = " ".join(s.text for s in segments).lower().strip()
-                                        clean_text = "".join(c for c in transcript if c.isalnum() or c.isspace()).strip()
+                                        segment_list = list(segments)
+                                        transcript = " ".join(s.text for s in segment_list).lower().strip()
+                                        clean_text = "".join(c for c in transcript if c.isalnum() or c.isspace() or c == '-').strip()
 
-                                        is_wake = (
-                                            any(v in clean_text for v in self.phonetic_variants) or
-                                            any(w in clean_text for w in self.wake_words) or
-                                            "santra" in clean_text or
-                                            "jarvis" in clean_text
+                                        confidence = 0.85
+                                        if segment_list:
+                                            import math
+                                            avg_logprob = sum(seg.avg_logprob for seg in segment_list) / len(segment_list)
+                                            confidence = math.exp(avg_logprob)
+
+                                        # Evaluate candidate using PronunciationManager
+                                        is_wake, detected_variant, score = self.pronunciation_mgr.evaluate_candidate(
+                                            clean_text, confidence=confidence
                                         )
 
                                         if is_wake:
                                             now = time.time()
+                                            debounce_sec = getattr(config, "wakeword_debounce_sec", 1.5)
                                             if now > self._debounce_until:
-                                                self._debounce_until = now + 1.5
-                                                logger.info(f"[SANTRA_WAKE] Detected wake word in '{clean_text}'")
+                                                self._debounce_until = now + debounce_sec
+                                                # Flush audio queue so trailing frames of this wake utterance do not re-trigger
+                                                while not self._audio_queue.empty():
+                                                    try:
+                                                        self._audio_queue.get_nowait()
+                                                    except queue.Empty:
+                                                        break
+                                                logger.info(f"[SANTRA_WAKE] Detected wake phrase '{detected_variant}' in '{clean_text}' (score={score:.2f})")
                                                 if self._callback:
                                                     threading.Thread(
                                                         target=self._callback,
@@ -663,11 +705,6 @@ class SantraWakeWordDetector(WakeWordDetector):
                                                     ).start()
                                     except Exception as te:
                                         logger.debug(f"Santra verification check error: {te}")
-
-                            # Clear buffer after evaluating speech burst
-                            self._speech_buffer.clear()
-                            self._speech_frames = 0
-                            self._silence_frames = 0
 
             except Exception as e:
                 logger.error(f"Error in SantraWakeWordDetector execution loop: {e}", exc_info=True)
@@ -706,13 +743,10 @@ class WakeWordDetectorFactory:
                 return SantraWakeWordDetector(**kwargs)
             return det
         elif engine_lower == "porcupine":
-            det = PorcupineWakeWordDetector(**kwargs)
-            if not det.is_available():
-                logger.warning(f"[WAKE_WORD_DIAGNOSTIC] Porcupine unavailable: {det.get_diagnostic()}. Falling back to SantraWakeWordDetector.")
-                return SantraWakeWordDetector(**kwargs)
-            return det
+            return PorcupineWakeWordDetector(**kwargs)
         elif engine_lower == "mock":
             return MockWakeWordDetector(**kwargs)
         else:
-            logger.info(f"Defaulting to SantraWakeWordDetector for engine type: '{engine_type}'")
-            return SantraWakeWordDetector(**kwargs)
+            logger.info(f"Defaulting to MockWakeWordDetector for unrecognized engine type: '{engine_type}'")
+            return MockWakeWordDetector(**kwargs)
+

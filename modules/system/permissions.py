@@ -42,7 +42,8 @@ INTENT_RISK_MAPPING = {
     "memory_control": RiskLevel.LOW,
     "privacy_control": RiskLevel.LOW,
     "unsupported_capability": RiskLevel.LOW,
-    "invalid_command": RiskLevel.LOW
+    "invalid_command": RiskLevel.LOW,
+    "panel_visibility": RiskLevel.LOW
 }
 
 def get_action_risk_level(intent: str, action: str = None) -> str:
@@ -70,14 +71,21 @@ def get_action_risk_level(intent: str, action: str = None) -> str:
             return RiskLevel.HIGH
         return RiskLevel.LOW
 
+    if intent == "spotify_control":
+        if action in ["delete_playlist", "unfollow_playlist", "replace_tracks", "clear_playlist"]:
+            return RiskLevel.HIGH
+        elif action in ["create_playlist", "rename_playlist", "add_track", "add_tracks_by_artist", "remove_track", "reorder_track", "cleanup_duplicates"]:
+            return RiskLevel.MEDIUM
+        return RiskLevel.LOW
+
     return INTENT_RISK_MAPPING.get(intent, RiskLevel.MEDIUM)
 
 def is_safe_command(intent: str, params: dict) -> bool:
     """Validates parameters of a command to ensure they are safe and do not contain
     malicious strings or shell injection vectors.
     """
-    # Content generation, web search, memory, privacy, and command management are safe from shell execution
-    if intent in ["content_generation", "web_search", "open_website", "conversation", "question", "explain_tool_execution", "memory_control", "privacy_control", "command_management", "custom_command"]:
+    # Content generation, web search, memory, privacy, command management, spotify, and panel visibility are safe from shell execution
+    if intent in ["content_generation", "web_search", "open_website", "conversation", "question", "explain_tool_execution", "memory_control", "privacy_control", "command_management", "custom_command", "spotify_control", "panel_visibility"]:
         # Only verify explicit shell execution targets if present
         check_keys = ["command", "script"]
     else:

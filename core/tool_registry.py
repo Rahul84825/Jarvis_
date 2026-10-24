@@ -293,7 +293,7 @@ class ToolRegistry:
             verification_strategy="process_check"
         ))
 
-        # 4. Media & YouTube playback
+        # 4. Media, YouTube & Spotify playback
         self.register(ToolDefinition(
             name="media_control",
             category="media",
@@ -307,6 +307,59 @@ class ToolRegistry:
             description="Control YouTube video playback in the browser: pause, resume, seek, volume.",
             args={"action": str, "value": Optional[Any]},
             risk_level="LOW"
+        ))
+        self.register(ToolDefinition(
+            name="spotify_control",
+            category="media",
+            description="Unified natural-language control for Spotify playback, playlist management, and devices.",
+            args={"action": str, "target": Optional[str], "playlist_name": Optional[str], "track_name": Optional[str]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="spotify.playback",
+            category="media",
+            description="Control Spotify playback: play, pause, next, previous, seek, volume, shuffle, repeat, transfer device.",
+            args={"action": str, "device_id": Optional[str], "position_ms": Optional[int], "volume_percent": Optional[int], "state": Optional[Any]},
+            risk_level="LOW",
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="spotify.playlist",
+            category="media",
+            description="Manage Spotify playlists: create, list, rename, add tracks, remove tracks, reorder, deduplicate.",
+            args={"action": str, "name": Optional[str], "playlist_id": Optional[str], "tracks": Optional[List[str]]},
+            risk_level="MEDIUM",
+            has_side_effects=True,
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="spotify.playlist.delete",
+            category="media",
+            description="Remove/unfollow a playlist from the user's Spotify library (requires explicit user confirmation).",
+            args={"playlist_id": str, "name": Optional[str]},
+            risk_level="HIGH",
+            requires_confirmation=True,
+            has_side_effects=True,
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="spotify.playlist.replace",
+            category="media",
+            description="Replace all contents of a Spotify playlist with new tracks (requires explicit user confirmation).",
+            args={"playlist_id": str, "track_uris": List[str]},
+            risk_level="HIGH",
+            requires_confirmation=True,
+            has_side_effects=True,
+            verification_strategy="status_code"
+        ))
+        self.register(ToolDefinition(
+            name="spotify.account",
+            category="media",
+            description="Manage Spotify account connection, profile, status, and authentication.",
+            args={"action": str},
+            risk_level="LOW",
+            verification_strategy="status_code"
         ))
 
         # 5. Filesystem
@@ -647,6 +700,16 @@ class ToolRegistry:
             args={"query": str},
             risk_level="LOW",
             verification_strategy="status_code"
+        ))
+
+        # Panel Visibility
+        self.register(ToolDefinition(
+            name="panel_visibility",
+            category="ui",
+            description="Control Santra HUD panel visibility (show, hide, minimize, restore).",
+            args={"action": str},
+            risk_level="LOW",
+            verification_strategy="ui_state"
         ))
 
 # Global singleton

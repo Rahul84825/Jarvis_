@@ -1,6 +1,7 @@
 import os
 import wave
 import time
+import uuid
 import logging
 import tempfile
 import threading
@@ -35,7 +36,7 @@ class SpeechListener:
         
         self._audio_buffer = []
         self._pre_roll_buffer = []
-        self.pre_roll_duration = 1.0
+        self.pre_roll_duration = 1.5
         self._silence_start = None
         self._speech_detected = False
         self._manual_recording = False
@@ -60,6 +61,7 @@ class SpeechListener:
         self.speaking_active = False
         self._barge_in_active = False
         self._speaking_cooldown_until = 0.0
+        self._chime_cooldown_until = 0.0
         self._consecutive_speech_frames = 0
         self.MIN_CONSECUTIVE_FRAMES = 3
 
@@ -105,6 +107,11 @@ class SpeechListener:
                 else:
                     self._speaking_cooldown_until = 0.0
                 self._consecutive_speech_frames = 0
+
+    def suppress_chime_feedback(self, duration: float = 0.22):
+        """Suppresses audio ingestion during acoustic chime playback to prevent speaker-to-mic feedback."""
+        with self._lock:
+            self._chime_cooldown_until = time.time() + duration
 
     def trigger_barge_in(self):
         """Programmatically triggers barge-in (clears speaking state and cooldown, captures speech)."""
@@ -188,28 +195,40 @@ class SpeechListener:
             self._speaking_cooldown_until = 0.0
             self._consecutive_speech_frames = 0
             
-            try:
-                from config import config
-                from core.audio_device_resolver import resolve_audio_input_device
-                pref = getattr(config, "audio_input_device", None) or getattr(config, "microphone_device", None)
-                input_dev, dev_name = resolve_audio_input_device(pref)
-                self.active_input_device_index = input_dev
-                self.active_input_device_name = dev_name
-                self._stream = sd.InputStream(
-                    device=input_dev,
-                    samplerate=self.sample_rate,
-                    channels=1,
-                    callback=self._audio_callback,
-                    blocksize=2048,  # increased from 1024 for stability
-                    latency='high',   # prioritized buffer stability
-                    dtype='float32'
-                )
-                self._stream.start()
-                logger.info(f"Speech Listener stream started successfully (device=[{input_dev}] '{dev_name}').")
-            except Exception as e:
-                self._running = False
-                logger.error(f"Failed to start Speech Listener stream: {e}", exc_info=True)
-                raise e
+            from config import config
+            from core.audio_device_resolver import resolve_audio_input_device
+
+            max_retries = 2
+            last_err = None
+            for attempt in range(max_retries + 1):
+                try:
+                    pref = getattr(config, "audio_input_device", None) or getattr(config, "microphone_device", None)
+                    input_dev, dev_name = resolve_audio_input_device(pref)
+                    self.active_input_device_index = input_dev
+                    self.active_input_device_name = dev_name
+                    self._stream = sd.InputStream(
+                        device=input_dev,
+                        samplerate=self.sample_rate,
+                        channels=1,
+                        callback=self._audio_callback,
+                        blocksize=2048,  # increased from 1024 for stability
+                        latency='high',   # prioritized buffer stability
+                        dtype='float32'
+                    )
+                    self._stream.start()
+                    logger.info(f"Speech Listener stream started successfully (device=[{input_dev}] '{dev_name}').")
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt < max_retries:
+                        logger.warning(f"Audio stream init attempt {attempt + 1}/{max_retries + 1} failed: {e}. Retrying in 1s...")
+                        time.sleep(1.0)
+                    else:
+                        self._running = False
+                        self.active_input_device_name = f"Unavailable ({e})"
+                        logger.error(f"Failed to start Speech Listener stream after {max_retries + 1} attempts: {e}", exc_info=True)
+                        raise e
 
     def stop(self):
         """Stops the stream and releases microphone hardware."""
@@ -240,13 +259,24 @@ class SpeechListener:
             return self._running
 
     def trigger_manual_recording(self, manual=True):
-        """Bypasses voice activity detection and begins capturing audio immediately."""
+        """Bypasses voice activity detection and begins capturing audio immediately.
+        Preserves existing in-flight audio if VAD is already recording to prevent
+        losing trailing words spoken immediately after the wake word.
+        """
         with self._lock:
             if not self._running:
                 logger.warning("Cannot start recording. Listener is not running.")
                 return
             
-            logger.info(f"Speech recording triggered (manual={manual}). Resetting buffer.")
+            if self._recording:
+                # Already recording speech in progress (e.g. VAD caught 'Santra...').
+                # Preserve existing audio buffer so subsequent command words are not wiped!
+                logger.info(f"Speech recording already in progress (manual={manual}). Preserving {len(self._audio_buffer)} existing audio chunks.")
+                self._manual_recording = manual
+                self._silence_start = None
+                return
+
+            logger.info(f"Speech recording triggered (manual={manual}). Initializing buffer from pre-roll.")
             self._audio_buffer = list(self._pre_roll_buffer)
             self._recording = True
             self._recording_start_time = time.time()
@@ -389,6 +419,10 @@ class SpeechListener:
                     self._consecutive_speech_frames = 0
                     return
 
+                # Acoustic chime feedback suppression: don't ingest speaker beep tones
+                if now < self._chime_cooldown_until:
+                    return
+
                 self._audio_buffer.append(indata.copy())
                 
                 # Check for max recording duration safety cap (e.g., 10 seconds)
@@ -422,8 +456,17 @@ class SpeechListener:
                         self._audio_buffer = []
                         self._silence_start = None
                         self._recording_start_time = None
+                        speech_was_detected = self._speech_detected
                         self._speech_detected = False
                         self._consecutive_speech_frames = 0
+
+                        calc_rms = float(np.sqrt(np.mean(captured_data**2))) if len(captured_data) > 0 else 0.0
+                        # If no speech was detected during the segment and audio energy is at ambient floor, discard without running STT
+                        if not speech_was_detected and calc_rms < max(0.005, self._ambient_rms * 1.25):
+                            logger.info(f"VAD: Segment contains no speech (SpeechDetected=False, RMS={calc_rms:.4f} <= Ambient={self._ambient_rms:.4f}). Discarding without STT.")
+                            if self.on_speech_end_cb:
+                                threading.Thread(target=self.on_speech_end_cb, args=("",), name="ListenerSilentCB", daemon=True).start()
+                            return
                         
                         threading.Thread(target=self._save_and_dispatch, args=(captured_data,), name="ListenerSaveThread", daemon=True).start()
 
@@ -431,6 +474,19 @@ class SpeechListener:
         """Encodes float32 samples to 16-bit WAV and triggers end-of-speech callback."""
         from pathlib import Path
         try:
+            if audio_data is None or len(audio_data) < int(self.sample_rate * 0.25):
+                logger.info("Audio segment duration too short (<250ms). Discarding without STT.")
+                if self.on_speech_end_cb:
+                    self.on_speech_end_cb("")
+                return
+
+            calc_rms = float(np.sqrt(np.mean(audio_data**2)))
+            if calc_rms < 0.0025:
+                logger.info(f"Audio segment has negligible energy (RMS={calc_rms:.5f}). Discarding silence without STT.")
+                if self.on_speech_end_cb:
+                    self.on_speech_end_cb("")
+                return
+
             # Clip values to ensure safe range, then convert to 16-bit PCM integers
             clipped = np.clip(audio_data, -1.0, 1.0)
             pcm_data = (clipped * 32767.0).astype(np.int16)
@@ -445,7 +501,8 @@ class SpeechListener:
                 wav_file.setframerate(self.sample_rate)
                 wav_file.writeframes(pcm_data.tobytes())
                 
-            logger.info(f"Speech WAV file saved: {temp_path}")
+            segment_id = f"seg_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+            logger.info(f"Speech WAV file saved: {temp_path} [Segment: {segment_id}]")
             
             # Save a debug copy in logs/debug_wavs/ and maintain last 20 files if debug_audio is enabled
             try:

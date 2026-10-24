@@ -25,26 +25,60 @@ class MockToolAdapters:
         self.executed_tools.append({"tool": "app_control", "action": action, "target": target, "args": args})
         tgt = (target or "").lower().strip()
 
-        # Find or create virtual application
-        app = self.env.apps.get(tgt)
+        # Comprehensive alias map to prevent creating duplicate virtual applications
+        alias_map = {
+            "chrome": "chrome",
+            "google chrome": "chrome",
+            "google chrome browser": "chrome",
+            "chrome browser": "chrome",
+            "chrome.exe": "chrome",
+            "notepad": "notepad",
+            "notepad.exe": "notepad",
+            "notepad editor": "notepad",
+            "microsoft notepad": "notepad",
+            "text editor": "notepad",
+            "code": "code",
+            "vs code": "code",
+            "vscode": "code",
+            "visual studio code": "code",
+            "code editor": "code",
+            "code.exe": "code",
+            "discord": "discord",
+            "spotify": "spotify",
+            "chatgpt": "chatgpt",
+            "whatsapp": "whatsapp",
+            "whatsapp web": "whatsapp"
+        }
+        canonical_id = alias_map.get(tgt, tgt)
+
+        # Find or create virtual application without duplicate records
+        app = self.env.apps.get(canonical_id)
         if not app:
-            # Map friendly aliases
-            alias_map = {"chrome": "chrome", "google chrome": "chrome", "notepad": "notepad", "vs code": "code", "vscode": "code"}
-            norm_tgt = alias_map.get(tgt, tgt)
-            app = self.env.apps.get(norm_tgt)
+            # Check if any existing app has this name or title
+            for existing_id, existing_app in self.env.apps.items():
+                if existing_app.name.lower() == tgt or existing_app.app_id == canonical_id:
+                    app = existing_app
+                    break
 
         if not app:
             from core.virtual_lab.environment_simulator import VirtualApplication
-            app = VirtualApplication(tgt, target.title(), f"{target.title()} Window", is_running=False)
-            self.env.apps[tgt] = app
+            app = VirtualApplication(canonical_id, target.title(), f"{target.title()} Window", is_running=False)
+            self.env.apps[canonical_id] = app
 
         if action in ["open", "launch", "start"]:
+            # Focus this app and unfocus all other apps
+            for other_id, other_app in self.env.apps.items():
+                if other_app != app:
+                    other_app.is_focused = False
             app.launch()
             return {"success": True, "message": f"Successfully launched virtual {app.name}.", "action": action, "target": target}
         elif action in ["close", "terminate", "kill"]:
             app.close()
             return {"success": True, "message": f"Successfully closed virtual {app.name}.", "action": action, "target": target}
         elif action in ["focus", "switch", "activate"]:
+            for other_id, other_app in self.env.apps.items():
+                if other_app != app:
+                    other_app.is_focused = False
             app.focus()
             return {"success": True, "message": f"Switched focus to virtual {app.name}.", "action": action, "target": target}
 
@@ -56,18 +90,18 @@ class MockToolAdapters:
         args = args or {}
         new_tab = bool(args.get("new_tab", False))
 
-        if action in ["search", "search_website"]:
-            query = args.get("search_query") or args.get("query") or target
-            site = args.get("site_name") or args.get("provider", "google")
+        if action in ["search", "search_website", "search_web"]:
+            query = args.get("search_query") or args.get("query") or target or ""
+            site = args.get("site_name") or args.get("provider") or "google"
             self.env.browser.execute_search(query=query, site=site, new_tab=new_tab)
-            return {"success": True, "message": f"Executed virtual search for '{query}' on {site}.", "action": "search", "query": query}
+            return {"success": True, "message": f"Executed virtual search for '{query}' on {site}.", "action": "search", "query": query, "site": site}
         elif action == "open_url" or "navigate" in action:
-            url = args.get("url") or target
+            url = args.get("url") or target or "about:blank"
             self.env.browser.open_url(url=url, site_name=args.get("site_name", ""), new_tab=new_tab)
             return {"success": True, "message": f"Navigated virtual browser to '{url}'.", "action": "open_url", "url": url}
         elif action == "interact_prompt":
             site = args.get("site_name", "chatgpt")
-            prompt = args.get("prompt_query") or target
+            prompt = args.get("prompt_query") or target or ""
             self.env.browser.execute_prompt(site=site, prompt=prompt)
             return {"success": True, "message": f"Prompt submitted to virtual {site}: '{prompt}'.", "action": "interact_prompt"}
 

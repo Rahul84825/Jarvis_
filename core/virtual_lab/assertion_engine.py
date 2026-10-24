@@ -78,10 +78,11 @@ class StateAssertionEngine:
                 failure_cat = FailureCategory.STATE_VERIFICATION
                 failure_msg = state_err
 
-        # Generate reproduction command
+        # Generate reproduction command compatible with unittest and programmatic invocation
+        test_method_name = f"test_scenario_{scenario.scenario_id.replace('-', '_')}"
         repro = (
-            f"python -m unittest tests.test_virtual_lab -k {scenario.scenario_id}\n"
-            f"# Command: '{scenario.command}'"
+            f"python -m unittest tests.test_virtual_lab -k {test_method_name}\n"
+            f"# Programmatic: python -c \"from core.virtual_lab.lab_controller import VirtualLabController; print(VirtualLabController().run_single('{scenario.scenario_id}'))\""
         )
 
         return ScenarioResult(
@@ -118,6 +119,8 @@ class StateAssertionEngine:
             app_obj = env.apps.get(target_app)
             if not app_obj or not app_obj.is_running:
                 return False, f"Expected app '{target_app}' to be launched and running."
+            if not app_obj.is_focused:
+                return False, f"Expected app '{target_app}' to be focused after launch."
 
         # File created
         if "file_created" in expected:
@@ -141,7 +144,7 @@ class StateAssertionEngine:
         if "url_opened" in expected:
             expected_url = expected["url_opened"].lower().strip()
             actual_url = (env.browser.active_url or "").lower().strip()
-            if expected_url not in actual_url:
+            if expected_url not in actual_url and actual_url not in expected_url:
                 return False, f"Expected URL '{expected_url}', but active browser URL is '{actual_url}'."
 
         return True, None

@@ -40,6 +40,7 @@ class MainWindow(QMainWindow):
     sig_sys_stats_updated = pyqtSignal(float, float)
     sig_speech_text_updated = pyqtSignal(str)
     sig_closed = pyqtSignal()
+    sig_panel_visibility_requested = pyqtSignal(str)
     sig_command_submitted = pyqtSignal(str)
     sig_history_updated = pyqtSignal(list)
     sig_last_action_updated = pyqtSignal(str, bool, str)
@@ -53,10 +54,11 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.setWindowTitle("J.A.R.V.I.S. // Autonomous System")
         self.resize(1180, 780)
         self.setMinimumSize(960, 620)
+        self.global_hotkey_manager = None
 
         self._current_state = JarvisUIState.STANDBY
         self._status_text = "STANDBY"
@@ -195,11 +197,23 @@ class MainWindow(QMainWindow):
         self.btn_ai_settings.clicked.connect(self._open_ai_settings)
         input_layout.addWidget(self.btn_ai_settings)
 
+        self.btn_pronunciation = QPushButton("🗣️ ACCENT")
+        self.btn_pronunciation.setProperty("class", "cyberButton")
+        self.btn_pronunciation.setToolTip("Configure Indian Accent Pronunciation & Wake-Word Intelligence (Ctrl+Shift+P)")
+        self.btn_pronunciation.clicked.connect(self._open_pronunciation_settings)
+        input_layout.addWidget(self.btn_pronunciation)
+
         self.btn_lab = QPushButton("🧪 LAB")
         self.btn_lab.setProperty("class", "cyberButton")
         self.btn_lab.setToolTip("Open Santra Virtual Testing Room & Capability Lab (Ctrl+Shift+L)")
         self.btn_lab.clicked.connect(self._open_virtual_lab)
         input_layout.addWidget(self.btn_lab)
+
+        self.btn_spotify = QPushButton("🎵 SPOTIFY")
+        self.btn_spotify.setProperty("class", "cyberButton")
+        self.btn_spotify.setToolTip("Open Spotify Integration, Playback & Playlist Manager (Ctrl+Shift+M)")
+        self.btn_spotify.clicked.connect(self._open_spotify_panel)
+        input_layout.addWidget(self.btn_spotify)
 
         self.btn_sleep = QPushButton("🌙 SLEEP")
         self.btn_sleep.setProperty("class", "cyberButton")
@@ -236,6 +250,22 @@ class MainWindow(QMainWindow):
         self.shortcut_lab = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
         self.shortcut_lab.activated.connect(self._open_virtual_lab)
 
+        # Pronunciation & Accent Intelligence shortcut
+        self.shortcut_pronunciation = QShortcut(QKeySequence("Ctrl+Shift+P"), self)
+        self.shortcut_pronunciation.activated.connect(self._open_pronunciation_settings)
+
+        # Spotify Suite shortcut
+        self.shortcut_spotify = QShortcut(QKeySequence("Ctrl+Shift+M"), self)
+        self.shortcut_spotify.activated.connect(self._open_spotify_panel)
+
+    def _open_spotify_panel(self):
+        try:
+            from ui.panels.spotify_panel import SpotifyDialog
+            dialog = SpotifyDialog(self)
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"Failed to open Spotify Dialog: {e}", exc_info=True)
+
     def _open_screen_intelligence(self):
         try:
             from ui.panels.screen_intelligence_panel import ScreenIntelligencePanel
@@ -260,6 +290,14 @@ class MainWindow(QMainWindow):
             dialog.exec()
         except Exception as e:
             logger.error(f"Failed to open AI Settings: {e}")
+
+    def _open_pronunciation_settings(self):
+        try:
+            from ui.panels.pronunciation_settings_dialog import PronunciationSettingsDialog
+            dialog = PronunciationSettingsDialog(self)
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"Failed to open Pronunciation Settings: {e}", exc_info=True)
 
     def _open_virtual_lab(self):
         try:
@@ -657,5 +695,8 @@ class MainWindow(QMainWindow):
         pass
 
     def closeEvent(self, event):
+        # Hide window to system tray instead of destroying application
+        event.ignore()
+        self.hide()
         self.sig_closed.emit()
-        event.accept()
+

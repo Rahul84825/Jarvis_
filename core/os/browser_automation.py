@@ -281,6 +281,7 @@ class BrowserAutomationEngine:
                 }
 
         # Standard launch / navigate
+        logger.info(f"[DOMAIN_TRACE][BROWSER_NAV] browser='{intent.target_browser or 'chrome'}', target_url='{target_url}', domain='{target_domain}'")
         res = self.browser_mgr.open_browser(browser_name=intent.target_browser, url=target_url)
         if not res.get("success", False):
             return {

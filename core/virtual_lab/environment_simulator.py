@@ -96,22 +96,38 @@ class VirtualFileSystem:
 
         if lower.startswith("desktop/"):
             rel = norm[8:]
-            return os.path.join(self.desktop_path, rel.replace("/", os.sep))
+            target = os.path.join(self.desktop_path, rel.replace("/", os.sep))
         elif lower.startswith("documents/"):
             rel = norm[10:]
-            return os.path.join(self.documents_path, rel.replace("/", os.sep))
+            target = os.path.join(self.documents_path, rel.replace("/", os.sep))
         elif lower.startswith("downloads/"):
             rel = norm[10:]
-            return os.path.join(self.downloads_path, rel.replace("/", os.sep))
+            target = os.path.join(self.downloads_path, rel.replace("/", os.sep))
         elif lower.startswith("dsa/"):
             rel = norm[4:]
-            return os.path.join(self.dsa_path, rel.replace("/", os.sep))
+            target = os.path.join(self.dsa_path, rel.replace("/", os.sep))
         elif os.path.isabs(virtual_path):
             # If absolute, map basename to Desktop sandbox for safety
             base = os.path.basename(virtual_path)
-            return os.path.join(self.desktop_path, base)
+            target = os.path.join(self.desktop_path, base)
         else:
-            return os.path.join(self.desktop_path, norm.replace("/", os.sep))
+            target = os.path.join(self.desktop_path, norm.replace("/", os.sep))
+
+        resolved = os.path.abspath(target)
+
+        # Enforce sandbox isolation: ensure path does not traverse out of root_path
+        try:
+            common = os.path.commonpath([resolved, self.root_path])
+            if common != self.root_path:
+                logger.warning(f"[VirtualFS] Blocked path traversal attempt: '{virtual_path}' -> '{resolved}'")
+                safe_base = os.path.basename(norm) or "traversal_prevented.tmp"
+                return os.path.abspath(os.path.join(self.desktop_path, safe_base))
+        except (ValueError, Exception) as ex:
+            logger.warning(f"[VirtualFS] Path resolution error or cross-drive traversal for '{virtual_path}': {ex}")
+            safe_base = os.path.basename(norm) or "traversal_prevented.tmp"
+            return os.path.abspath(os.path.join(self.desktop_path, safe_base))
+
+        return resolved
 
     def save_file(self, full_path: str, content: str, overwrite: bool = False) -> bool:
         """Saves file strictly inside sandbox with overwrite tracking."""
@@ -174,26 +190,45 @@ class VirtualBrowser:
         self.current_page_text: str = "Welcome to Simulated Web Browser."
 
     def open_url(self, url: str, site_name: str = "", new_tab: bool = False):
+        norm_url = (url or "").strip()
+        if not norm_url:
+            norm_url = "about:blank"
+        elif not norm_url.startswith(("http://", "https://", "about:", "file://")):
+            norm_url = f"https://{norm_url}"
+
         if new_tab or not self.tabs:
             new_id = len(self.tabs) + 1
-            self.tabs.append({"url": url, "title": site_name or url, "id": new_id})
+            self.tabs.append({"url": norm_url, "title": site_name or norm_url, "id": new_id})
             self.active_tab_id = new_id
         else:
             cur = next((t for t in self.tabs if t["id"] == self.active_tab_id), self.tabs[0])
-            cur["url"] = url
-            cur["title"] = site_name or url
+            cur["url"] = norm_url
+            cur["title"] = site_name or norm_url
 
-        self.active_url = url
-        self.active_title = site_name or url
-        self.history.append(url)
-        logger.debug(f"[VirtualBrowser] Navigated to '{url}' (Tab: {self.active_tab_id})")
+        self.active_url = norm_url
+        self.active_title = site_name or norm_url
+        self.history.append(norm_url)
+        logger.debug(f"[VirtualBrowser] Navigated to '{norm_url}' (Tab: {self.active_tab_id})")
 
     def execute_search(self, query: str, site: str = "google", new_tab: bool = False):
-        self.last_search_query = query
-        self.last_search_site = site
-        dest_url = f"https://www.{site}.com/search?q={query.replace(' ', '+')}"
+        self.last_search_query = query or ""
+        self.last_search_site = site or "google"
+
+        site_lower = (site or "google").lower().strip()
+        site_endpoints = {
+            "google": "https://www.google.com/search?q=",
+            "youtube": "https://www.youtube.com/results?search_query=",
+            "hianime": "https://hianime.to/search?keyword=",
+            "github": "https://github.com/search?q=",
+            "reddit": "https://www.reddit.com/search/?q=",
+            "wikipedia": "https://en.wikipedia.org/wiki/Special:Search?search="
+        }
+        base_endpoint = site_endpoints.get(site_lower, f"https://www.{site_lower}.com/search?q=")
+        q_enc = query.strip().replace(' ', '+') if query else ""
+        dest_url = f"{base_endpoint}{q_enc}"
+
         self.open_url(dest_url, site_name=site, new_tab=new_tab)
-        self.dom_inputs["search"] = query
+        self.dom_inputs["search"] = query or ""
         self.current_page_text = f"Simulated search results for query: '{query}' on {site}."
 
     def execute_prompt(self, site: str, prompt: str):
